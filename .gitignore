@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Wrangler local state
+.wrangler/
+
+# Environment variables
+.env
+.dev.vars
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+*.log
+
+# PM2
+.pm2/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Backup
+*.backup
+*.bak
+*.tar.gz
+*.zip
