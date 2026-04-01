@@ -13,7 +13,7 @@
 
 ## 核心功能
 
-### 已完成（v1.0 MVP）
+### 已完成（v1.1）
 
 - **智慧推薦引擎**：輸入出發站、時段、偏好，推薦 Top 5 捷運站
 - **可解釋分數**：每個推薦結果展示四維分數拆解（熱門度、連結性、偏好匹配、旅行成本）
@@ -22,15 +22,23 @@
 - **視覺化圖表**：Chart.js 總分比較與堆疊分析圖
 - **演算法說明頁**：公式推導與權重說明
 - **RESTful API**：完整的後端 API，可獨立使用
+- **🆕 SVG 捷運路線圖**：互動式示意圖，涵蓋5條路線100站，支援 hover、點擊選站、推薦高亮
+- **🆕 站點詳情頁**：PageRank 時序折線圖、偏好特徵雷達圖、人流連結分析
 
 ### 未來擴充
 
-- [ ] 捷運路線圖視覺化（SVG 互動地圖）
-- [ ] 站點詳情頁（各時段 PR 趨勢、周邊景點）
 - [ ] gamma 參數互動調整面板
 - [ ] 使用者回饋與推薦改善
 - [ ] 即時人流資料接入（台北捷運 Open Data）
 - [ ] 多段行程規劃
+
+## 頁面與路由
+
+| 頁面 | 路徑 | 說明 |
+|------|------|------|
+| 首頁 | `/` | SVG 路線圖 + 查詢表單 + 推薦結果 |
+| 站點詳情 | `/station/:id` | PageRank 時序圖、偏好雷達、連結分析 |
+| API 根 | `/api` | API 端點列表 |
 
 ## 推薦演算法
 
@@ -88,6 +96,7 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 |------|------|
 | `GET /api/stations` | 所有站點列表（支援 `?line=BL` 或 `?search=台北`） |
 | `GET /api/stations/:id` | 站點詳情 + 標籤 |
+| `GET /api/station-detail/:id` | 站點完整詳情（PR 時序、偏好雷達、人流連結） |
 | `GET /api/pagerank?time_period=afternoon&top_n=10` | PageRank 排名 |
 | `GET /api/pagerank/:stationId` | 站點各時段 PR 值 |
 | `GET /api/recommend/options` | 表單選項（站點、時段、偏好列表） |
@@ -119,10 +128,11 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 
 | 層面 | 技術 |
 |------|------|
-| 前端 | HTML + TailwindCSS (CDN) + 原生 JS |
+| 前端 | HTML + TailwindCSS (CDN) + 原生 JS + SVG |
 | 後端 | Hono Framework (TypeScript) |
 | 資料庫 | Cloudflare D1 (SQLite) |
-| 圖表 | Chart.js |
+| 圖表 | Chart.js (折線圖、雷達圖、長條圖) |
+| 地圖 | 自製 SVG 示意圖（MRTMap 模組） |
 | 部署 | Cloudflare Pages |
 | 開發工具 | Vite + Wrangler |
 
@@ -131,10 +141,11 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 ```
 webapp/
 ├── src/
-│   ├── index.ts              # 主應用入口 + 前端 HTML
+│   ├── index.ts              # 主應用入口 + 前端頁面 (首頁 + 站點詳情)
 │   ├── routes/
 │   │   ├── recommend.ts      # 推薦 API
 │   │   ├── stations.ts       # 站點 API
+│   │   ├── station-detail.ts # 站點詳情 API (NEW)
 │   │   └── pagerank.ts       # PageRank API
 │   ├── lib/
 │   │   ├── recommender.ts    # 推薦引擎核心
@@ -142,6 +153,9 @@ webapp/
 │   │   └── types.ts          # TypeScript 型別
 │   └── db/
 │       └── queries.ts        # D1 查詢封裝
+├── public/static/
+│   ├── mrt-map.js            # SVG 路線圖互動模組 (NEW)
+│   └── styles.css            # 自定義樣式
 ├── migrations/
 │   └── 0001_schema.sql       # 資料表結構
 ├── seed.sql                  # 種子資料
@@ -168,6 +182,12 @@ npm run dev:sandbox   # http://localhost:3000
 npm run db:reset
 ```
 
+## 使用指南
+
+1. **首頁**：在路線圖上點擊任一站或在搜尋欄輸入站名 → 選擇時段與偏好 → 點「開始推薦」
+2. **推薦結果**：查看 Top 5 推薦站，點展開查看分數拆解；推薦站會在路線圖上高亮顯示
+3. **站點詳情**：點擊推薦卡片上的站名，查看 PageRank 時序曲線、偏好雷達圖、人流連結
+
 ## 學術背景
 
 本專案源自學術研究：**將 PageRank 演算法應用於台北捷運人流分析**。
@@ -178,4 +198,4 @@ npm run db:reset
 
 ---
 
-*MRT Rank — 基於 PageRank 演算法的學術專題延伸作品*
+*MRT Rank v1.1 — 基於 PageRank 演算法的學術專題延伸作品*
