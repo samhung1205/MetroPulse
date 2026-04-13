@@ -34,3 +34,13 @@ Thumbs.db
 *.bak
 *.tar.gz
 *.zip
+
+# prompt
+AGENTS.md
+SKILL.md
+PROJECT_CONTEXT.md
+TASK_TEMPLATE.md
+
+pictures
+*.png
+*.pdf

@@ -7,14 +7,17 @@
     "build": "vite build",
     "preview": "wrangler pages dev dist",
     "deploy": "npm run build && wrangler pages deploy dist",
-    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name mrt-rank",
+    "deploy:prod": "npm run build && wrangler pages deploy dist --project-name metro-go --branch main",
     "dev:sandbox": "wrangler pages dev dist --d1=mrt-rank-db --local --ip 0.0.0.0 --port 3000",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "clean-port": "fuser -k 3000/tcp 2>/dev/null || true",
     "db:migrate:local": "wrangler d1 migrations apply mrt-rank-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply mrt-rank-db --remote",
     "db:seed": "wrangler d1 execute mrt-rank-db --local --file=./seed.sql",
+    "db:seed:remote": "wrangler d1 execute mrt-rank-db --remote --file=./seed.sql",
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed",
-    "db:console": "wrangler d1 execute mrt-rank-db --local"
+    "db:console": "wrangler d1 execute mrt-rank-db --local",
+    "stations:fallback": "node scripts/gen-stations-fallback.mjs"
   },
   "dependencies": {
     "hono": "^4.12.9"
@@ -24,6 +27,6 @@
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
     "vite": "^6.3.5",
-    "wrangler": "^4.4.0"
+    "wrangler": "^4.81.1"
   }
 }

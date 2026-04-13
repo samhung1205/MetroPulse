@@ -1,0 +1,15 @@
+{
+  "defaultDeployCommand": "npm run deploy",
+  "productionDeployCommand": "npm run deploy:prod",
+  "buildCommand": "npm run build",
+  "requiredFiles": [
+    "package.json",
+    "wrangler.jsonc",
+    "src/index.ts"
+  ],
+  "smokeTests": [
+    "home page loads",
+    "recommend API responds",
+    "station detail page loads"
+  ]
+}

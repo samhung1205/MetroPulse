@@ -1,0 +1,14 @@
+{
+  "weights": {
+    "w1": 0.3,
+    "w2": 0.25,
+    "w3": 0.3,
+    "w4": 0.15
+  },
+  "formula": "score = w1*popularity + w2*connectivity + w3*preference_match - w4*travel_cost",
+  "notes": [
+    "Keep scoring explainable",
+    "Travel cost is a penalty term",
+    "Modify one factor at a time when debugging behavior"
+  ]
+}

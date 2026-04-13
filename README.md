@@ -1,8 +1,8 @@
-# 🚇 MRT Rank — 台北捷運智慧推薦系統
+# 🚇 MetroPulse — 台北捷運智慧推薦系統
 
 ## 專案概覽
 
-**MRT Rank** 是一個基於 **PageRank 演算法**的台北捷運站點推薦系統。
+**MetroPulse** 是一個基於 **PageRank 演算法**的台北捷運站點推薦系統。
 
 本專案將 Google PageRank 的「連結分析」概念遷移到捷運人流分析：
 - 人流量即連結 — 越多人從各站流向某一站，該站越「重要」
@@ -158,7 +158,7 @@ webapp/
 │   └── styles.css            # 自定義樣式
 ├── migrations/
 │   └── 0001_schema.sql       # 資料表結構
-├── seed.sql                  # 種子資料
+├── seed.sql                   # 種子資料
 ├── wrangler.jsonc             # Cloudflare 設定
 ├── vite.config.ts             # Vite 建置
 └── ecosystem.config.cjs       # PM2 設定
@@ -181,6 +181,50 @@ npm run dev:sandbox   # http://localhost:3000
 # 重置資料庫
 npm run db:reset
 ```
+
+## 部署流程
+
+**正式網址：** `https://metro-go.pages.dev`
+
+### 本地預覽 / 正式部署 / URL 差異
+
+| 用途 | 指令 | 會發生什麼事 | 你看到的網址 |
+|------|------|-------------|-------------|
+| 本地預覽（含本地 D1） | `npm run dev:sandbox` | 用 `wrangler pages dev dist --d1=... --local` 在你的電腦啟動 Pages 模擬環境，不會上傳到 Cloudflare | `http://localhost:3000` |
+| 正式部署（Production） | `npm run deploy:prod` | 先 `build`，再用 `wrangler pages deploy dist --project-name metro-go --branch main` 上傳到 Cloudflare Pages 的 `main` 分支 | 固定正式網址：`https://metro-go.pages.dev` |
+| 單次部署快照 | `npm run deploy:prod` 執行完成後 Wrangler 顯示的網址 | 那次部署的專屬快照，方便回頭核對某一版 | 例如：`https://<hash>.metro-go.pages.dev` |
+
+### 為什麼本地預覽和固定網址的指令不一樣？
+
+- `npm run dev:sandbox` 是 **本地模擬**：
+  - 不會部署到 Cloudflare
+  - 直接在你的電腦用 `dist` 啟動預覽
+  - `--local` 代表 D1 也使用本地資料庫
+  - 所以網址一定是 `localhost`
+
+- `npm run deploy:prod` 是 **正式上傳**：
+  - 會把目前 `dist` 上傳到 Cloudflare Pages
+  - `--project-name metro-go --branch main` 表示更新同一個 Pages 專案的正式分支
+  - 因此正式站固定是 `https://metro-go.pages.dev`
+
+- Cloudflare 同時還會為每次部署產生一個 **deployment URL**：
+  - 這個網址每次都不同，因為它代表「那一次部署的版本快照」
+  - 但正式 alias `https://metro-go.pages.dev` 會始終指向最新的 Production 部署
+
+依修改內容選擇對應指令：
+
+| 修改內容 | 指令 |
+|---------|------|
+| 改程式 / UI / API 邏輯 | `npm run deploy:prod` |
+| 新增資料表（改 migrations/） | `npm run db:migrate:remote` → `npm run deploy:prod` |
+| 補充種子資料（改 seed.sql） | `npm run db:seed:remote` |
+| 更新站點 fallback JSON | `npm run stations:fallback` → `npm run deploy:prod` |
+| 本機驗證後再部署 | `npm run build` → `npm run dev:sandbox` → `npm run deploy:prod` |
+
+> **注意事項**
+> - `db:seed:remote` 使用 `INSERT OR IGNORE`，不會覆蓋已存在的資料。若要修改既有資料，需另外執行 `UPDATE` SQL。
+> - Cloudflare Pages 部署有兩種網址：`metro-go.pages.dev`（永遠指向最新 Production）與 `<hash>.metro-go.pages.dev`（特定版本快照）。測試請使用前者。
+> - 需先完成 `wrangler login` 才能執行 remote 相關指令。
 
 ## 使用指南
 

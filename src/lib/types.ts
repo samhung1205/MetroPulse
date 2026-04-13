@@ -211,7 +211,7 @@ export interface RecommendQuery {
   top_n?: number;                  // 返回數量，預設 5
 }
 
-/** Cloudflare Bindings */
+/** Cloudflare Bindings（須與 Pages 專案 Settings → Bindings 的變數名一致） */
 export interface Env {
-  DB: D1Database;
+  mrt_rank_db: D1Database;
 }

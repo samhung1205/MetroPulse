@@ -13,6 +13,7 @@ import {
   searchStations,
   getStationTags,
 } from '../db/queries';
+import { jsonDbError } from '../lib/d1-response';
 
 const stations = new Hono<{ Bindings: Env }>();
 
@@ -28,11 +29,11 @@ stations.get('/', async (c) => {
   try {
     let result;
     if (search) {
-      result = await searchStations(c.env.DB, search);
+      result = await searchStations(c.env.mrt_rank_db, search);
     } else if (line) {
-      result = await getStationsByLine(c.env.DB, line);
+      result = await getStationsByLine(c.env.mrt_rank_db, line);
     } else {
-      result = await getAllStations(c.env.DB);
+      result = await getAllStations(c.env.mrt_rank_db);
     }
 
     return c.json({
@@ -41,7 +42,7 @@ stations.get('/', async (c) => {
       stations: result,
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 
@@ -53,12 +54,12 @@ stations.get('/:id', async (c) => {
   const id = c.req.param('id');
 
   try {
-    const station = await getStationById(c.env.DB, id);
+    const station = await getStationById(c.env.mrt_rank_db, id);
     if (!station) {
       return c.json({ success: false, error: '找不到該站點' }, 404);
     }
 
-    const tags = await getStationTags(c.env.DB, id);
+    const tags = await getStationTags(c.env.mrt_rank_db, id);
 
     return c.json({
       success: true,
@@ -66,7 +67,7 @@ stations.get('/:id', async (c) => {
       tags,
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 

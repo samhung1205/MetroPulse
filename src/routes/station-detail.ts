@@ -22,6 +22,7 @@ import {
   getStationTags,
   getPageRankByStation,
 } from '../db/queries';
+import { jsonDbError } from '../lib/d1-response';
 
 const stationDetail = new Hono<{ Bindings: Env }>();
 
@@ -35,9 +36,9 @@ stationDetail.get('/:id', async (c) => {
   try {
     // 並行查詢
     const [station, tags, prScores] = await Promise.all([
-      getStationById(c.env.DB, id),
-      getStationTags(c.env.DB, id),
-      getPageRankByStation(c.env.DB, id),
+      getStationById(c.env.mrt_rank_db, id),
+      getStationTags(c.env.mrt_rank_db, id),
+      getPageRankByStation(c.env.mrt_rank_db, id),
     ]);
 
     if (!station) {
@@ -45,7 +46,7 @@ stationDetail.get('/:id', async (c) => {
     }
 
     // 查詢該站的主要轉移連結（各時段 Top 5 目的站）
-    const transResult = await c.env.DB.prepare(`
+    const transResult = await c.env.mrt_rank_db.prepare(`
       SELECT t.to_station_id, t.time_period, t.transition_prob, t.normalized_prob, t.raw_flow,
              s.name_zh, s.line, s.line_color
       FROM transition_matrix t
@@ -56,7 +57,7 @@ stationDetail.get('/:id', async (c) => {
     `).bind(id).all();
 
     // 查詢反向連結 — 哪些站流向此站
-    const inboundResult = await c.env.DB.prepare(`
+    const inboundResult = await c.env.mrt_rank_db.prepare(`
       SELECT t.from_station_id, t.time_period, t.transition_prob, t.raw_flow,
              s.name_zh, s.line, s.line_color
       FROM transition_matrix t
@@ -113,7 +114,7 @@ stationDetail.get('/:id', async (c) => {
       },
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 

@@ -1,16 +1,17 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mrt-rank",
-  "compatibility_date": "2026-04-01",
-  "pages_build_output_dir": "./dist",
-  "compatibility_flags": ["nodejs_compat"],
-
-  // D1 Database — 台北捷運推薦系統資料庫
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "mrt-rank-db",
-      "database_id": "local-dev-placeholder"
-    }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "metro-go",
+	"compatibility_date": "2026-04-01",
+	"pages_build_output_dir": "./dist",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// D1 Database — 台北捷運推薦系統資料庫
+	"d1_databases": [
+		{
+			"binding": "mrt_rank_db",
+			"database_name": "mrt-rank-db",
+			"database_id": "2105f85a-ddb7-4356-9d28-eaf2eeb51842"
+		}
+	]
 }

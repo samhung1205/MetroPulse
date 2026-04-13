@@ -22,6 +22,7 @@ import {
 } from '../lib/types';
 import { computeRecommendations } from '../lib/recommender';
 import { getRecommendationCandidates, getStationById } from '../db/queries';
+import { jsonDbError } from '../lib/d1-response';
 
 const recommend = new Hono<{ Bindings: Env }>();
 
@@ -77,7 +78,7 @@ recommend.get('/', async (c) => {
 
   try {
     // Step 2: 確認出發站存在
-    const fromStation = await getStationById(c.env.DB, from);
+    const fromStation = await getStationById(c.env.mrt_rank_db, from);
     if (!fromStation) {
       return c.json({
         success: false,
@@ -88,7 +89,7 @@ recommend.get('/', async (c) => {
 
     // Step 3: 取得所有候選資料
     const candidates = await getRecommendationCandidates(
-      c.env.DB,
+      c.env.mrt_rank_db,
       from,
       timePeriod
     );
@@ -126,11 +127,7 @@ recommend.get('/', async (c) => {
     return c.json(response);
   } catch (error) {
     console.error('Recommendation error:', error);
-    return c.json({
-      success: false,
-      error: '推薦計算發生錯誤',
-      detail: String(error),
-    }, 500);
+    return jsonDbError(c, error);
   }
 });
 
@@ -141,14 +138,14 @@ recommend.get('/', async (c) => {
 recommend.get('/options', async (c) => {
   try {
     // 取得所有站點作為出發站選項
-    const result = await c.env.DB.prepare(
+    const result = await c.env.mrt_rank_db.prepare(
       `SELECT id, name_zh, line, line_color, is_transfer_station 
        FROM stations ORDER BY line, station_number`
     ).all();
 
     return c.json({
       success: true,
-      stations: result.results,
+      stations: result.results ?? [],
       time_periods: Object.entries(TIME_PERIOD_LABELS).map(([value, label]) => ({
         value,
         label,
@@ -160,7 +157,7 @@ recommend.get('/options', async (c) => {
       weights: DEFAULT_WEIGHTS,
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 

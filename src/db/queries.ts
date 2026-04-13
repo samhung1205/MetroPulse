@@ -24,7 +24,7 @@ export async function getAllStations(db: D1Database): Promise<Station[]> {
   const result = await db.prepare(
     'SELECT * FROM stations ORDER BY line, station_number'
   ).all<Station>();
-  return result.results;
+  return result.results ?? [];
 }
 
 /** 依路線篩選站點 */
@@ -140,24 +140,32 @@ export async function getBatchStationTags(
   stationIds: string[]
 ): Promise<Map<string, StationTag[]>> {
   if (stationIds.length === 0) return new Map();
-  
-  // D1 不支援 IN (?) 的陣列綁定，使用 JOIN 方式
-  const placeholders = stationIds.map(() => '?').join(',');
-  const result = await db.prepare(
-    `SELECT * FROM station_tags 
-     WHERE station_id IN (${placeholders})
-     ORDER BY station_id, tag_score DESC`
-  ).bind(...stationIds).all<StationTag>();
-  
+
+  // Cloudflare D1 / SQLite 對單次 bind 參數數量有限制，這裡分批查詢避免推薦頁在全站資料時爆掉。
+  const MAX_IDS_PER_QUERY = 50;
+  const allTags: StationTag[] = [];
+
+  for (let i = 0; i < stationIds.length; i += MAX_IDS_PER_QUERY) {
+    const chunk = stationIds.slice(i, i + MAX_IDS_PER_QUERY);
+    const placeholders = chunk.map(() => '?').join(',');
+    const result = await db.prepare(
+      `SELECT * FROM station_tags
+       WHERE station_id IN (${placeholders})
+       ORDER BY station_id, tag_score DESC`
+    ).bind(...chunk).all<StationTag>();
+
+    allTags.push(...(result.results ?? []));
+  }
+
   // 按 station_id 分組
   const tagMap = new Map<string, StationTag[]>();
-  for (const tag of result.results) {
+  for (const tag of allTags) {
     if (!tagMap.has(tag.station_id)) {
       tagMap.set(tag.station_id, []);
     }
     tagMap.get(tag.station_id)!.push(tag);
   }
-  
+
   return tagMap;
 }
 

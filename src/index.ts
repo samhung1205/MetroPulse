@@ -22,6 +22,24 @@ const app = new Hono<{ Bindings: Env }>();
 // ============================================================
 app.use('/api/*', cors());
 
+/** 子路由 /api/stations 等需要 D1；排除 GET /api 說明端點 */
+app.use(async (c, next) => {
+  const p = c.req.path;
+  if (!p.startsWith('/api/')) return next();
+  /** 僅靜態選項、不依賴 D1 */
+  if (p === '/api/pagerank/periods') return next();
+  if (c.env.mrt_rank_db) return next();
+  return c.json(
+    {
+      success: false,
+      error:
+        'D1 綁定缺失：執行環境中沒有 mrt_rank_db（c.env.mrt_rank_db 為空）。',
+      hint: '請至 Cloudflare Dashboard → Workers & Pages → 你的專案 → Settings → Functions → D1 database bindings，綁定資料庫 mrt-rank-db，且「變數名稱」必須與程式一致：mrt_rank_db。',
+    },
+    503
+  );
+});
+
 // ============================================================
 // API 路由掛載
 // ============================================================
@@ -152,25 +170,26 @@ function renderHomePage(): string {
   </section>
 
   <!-- ===== 路線圖 + 查詢表單 雙欄佈局 ===== -->
-  <section class="max-w-6xl mx-auto px-4 pb-6">
-    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+  <section class="max-w-7xl mx-auto px-4 pb-6">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
       <!-- 左側：SVG 路線圖 -->
-      <div class="lg:col-span-3 bg-white rounded-2xl shadow-lg p-4 relative overflow-hidden">
+      <div class="lg:col-span-7 xl:col-span-8 bg-white rounded-2xl shadow-lg p-4 relative overflow-hidden">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-sm font-bold text-gray-700"><i class="fas fa-map text-blue-500 mr-1"></i>捷運路線圖</h3>
           <span class="text-xs text-gray-400">點擊站點選擇出發站</span>
         </div>
-        <div id="mrt-map-container" class="w-full" style="min-height:420px;"></div>
+        <div id="mrt-map-container" class="w-full" style="min-height:520px;"></div>
       </div>
 
       <!-- 右側：查詢表單 -->
-      <div class="lg:col-span-2 bg-white rounded-2xl shadow-lg p-6">
+      <div class="lg:col-span-5 xl:col-span-4 bg-white rounded-2xl shadow-lg p-6">
         <!-- 出發站 -->
         <div class="mb-5">
           <label class="block text-sm font-semibold text-gray-700 mb-2">
             <i class="fas fa-map-marker-alt text-red-500 mr-1"></i>出發站
           </label>
+          <div id="stations-data-status" class="hidden"></div>
           <div class="relative">
             <input type="text" id="station-search" placeholder="輸入站名或點擊地圖選擇..."
               class="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all" autocomplete="off">
@@ -314,6 +333,10 @@ function renderHomePage(): string {
     // 全域狀態
     // ============================================================
     let allStations = [];
+    /** 站點 API 載入狀態：'' | 'network' | 'empty' | 其它錯誤字串 */
+    let stationsLoadDetail = '';
+    /** D1 無站點時是否已改用 /static/stations-fallback.json */
+    let usingStationsFallback = false;
     let selectedStation = null;
     let selectedTimePeriod = 'afternoon';
     let selectedPreference = 'all';
@@ -327,23 +350,138 @@ function renderHomePage(): string {
     // ============================================================
     document.addEventListener('DOMContentLoaded', async () => {
       await loadStations();
+      renderStationsDataStatus();
       setupEventListeners();
-      // 初始化 SVG 路線圖
+      // 初始化 SVG 路線圖（需在讀取 URL 參數前完成，以便同步地圖選取）
       MRTMap.init('mrt-map-container', allStations, {
-        onSelect: (stationId, stInfo) => {
-          if (stInfo) {
-            selectStation(stationId);
-          }
+        onSelect: (stationId) => {
+          selectStation(stationId);
         }
       });
+      applyQueryFromUrl();
     });
 
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    async function tryLoadStationsFallback() {
+      if (allStations.length > 0) return;
+      try {
+        const res = await fetch('/static/stations-fallback.json');
+        if (!res.ok) return;
+        const arr = await res.json();
+        if (Array.isArray(arr) && arr.length > 0) {
+          allStations = arr;
+          usingStationsFallback = true;
+        }
+      } catch (e) {
+        console.error('stations-fallback.json:', e);
+      }
+    }
+
     async function loadStations() {
+      stationsLoadDetail = '';
+      usingStationsFallback = false;
+      allStations = [];
       try {
         const res = await fetch('/api/stations');
-        const data = await res.json();
-        if (data.success) allStations = data.stations;
-      } catch (e) { console.error('Failed to load stations:', e); }
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          stationsLoadDetail = '站點 API 回傳非 JSON';
+          await tryLoadStationsFallback();
+          return;
+        }
+        if (!res.ok) {
+          stationsLoadDetail = data.error ? String(data.error) : 'HTTP ' + res.status;
+          await tryLoadStationsFallback();
+          return;
+        }
+        if (!data.success || !Array.isArray(data.stations)) {
+          stationsLoadDetail = data.error ? String(data.error) : '站點列表格式異常';
+          await tryLoadStationsFallback();
+          return;
+        }
+        allStations = data.stations;
+        if (allStations.length === 0) {
+          stationsLoadDetail = 'empty';
+          await tryLoadStationsFallback();
+        }
+      } catch (e) {
+        console.error('Failed to load stations:', e);
+        stationsLoadDetail = 'network';
+        await tryLoadStationsFallback();
+      }
+    }
+
+    function renderStationsDataStatus() {
+      const el = document.getElementById('stations-data-status');
+      const recBtn = document.getElementById('recommend-btn');
+      if (!el) return;
+      el.className =
+        'mb-3 rounded-xl border px-4 py-3 text-sm hidden';
+
+      if (allStations.length > 0 && usingStationsFallback) {
+        el.classList.remove('hidden');
+        el.classList.add('border-blue-200', 'bg-blue-50', 'text-blue-900');
+        el.innerHTML =
+          '<p class="font-semibold mb-1"><i class="fas fa-info-circle mr-1"></i>使用內建站點清單</p>' +
+          '<p class="text-blue-900/90 text-xs leading-relaxed">雲端 D1 尚無 <code class="rounded bg-white/80 px-1">stations</code> 資料時，會自動載入專案內建的站名列表，搜尋與地圖點選可正常操作。「開始推薦」仍須雲端已匯入完整種子資料。</p>' +
+          '<p class="mt-2 text-xs text-blue-900/85">請執行：<code class="rounded bg-white/80 px-1">npm run db:migrate:remote</code> 與 <code class="rounded bg-white/80 px-1">npm run db:seed:remote</code></p>';
+        if (recBtn) recBtn.disabled = false;
+        return;
+      }
+
+      if (allStations.length > 0) {
+        el.classList.add('hidden');
+        el.innerHTML = '';
+        if (recBtn) recBtn.disabled = false;
+        return;
+      }
+
+      if (recBtn) recBtn.disabled = true;
+      el.classList.remove('hidden');
+      el.classList.add('border-amber-200', 'bg-amber-50', 'text-amber-900');
+      let body = '<p class="font-semibold mb-1"><i class="fas fa-database mr-1"></i>尚未載入站點資料</p>';
+      if (stationsLoadDetail === 'network') {
+        body += '<p class="text-amber-900/90">無法連線到 API，請稍後再試。</p>';
+      } else if (stationsLoadDetail === 'empty') {
+        body += '<p class="text-amber-900/90 mb-2">雲端 D1 無站點資料，且內建 fallback 檔未載入。請確認已部署 <code class="rounded bg-white/80 px-1">public/static/stations-fallback.json</code>，並對 D1 執行 migration 與 seed。</p>';
+        body += '<pre class="mt-1 overflow-x-auto rounded-lg bg-white/90 p-2 text-xs text-gray-800">npm run db:migrate:remote<br>npm run db:seed:remote</pre>';
+      } else if (stationsLoadDetail) {
+        body += '<p class="text-amber-900/90">' + escapeHtml(stationsLoadDetail) + '</p>';
+      } else {
+        body += '<p class="text-amber-900/90">請確認 <code class="rounded bg-white/80 px-1">/api/stations</code> 可正常回傳站點列表。</p>';
+      }
+      el.innerHTML = body;
+    }
+
+    /**
+     * 從首頁網址查詢字串套用出發站／時段／偏好（例如站點詳情「以此站推薦」：/?from=BL12）
+     */
+    function applyQueryFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const fromId = params.get('from');
+      if (fromId && allStations.some((s) => s.id === fromId)) {
+        selectStation(fromId);
+      }
+      const tp = params.get('time_period');
+      if (tp) {
+        const tpBtn = document.querySelector('#time-period-options .option-card[data-value="' + tp + '"]');
+        if (tpBtn) tpBtn.click();
+      }
+      const pref = params.get('preference');
+      if (pref) {
+        const prefBtn = document.querySelector('#preference-options .option-card[data-value="' + pref + '"]');
+        if (prefBtn) prefBtn.click();
+      }
     }
 
     // ============================================================
@@ -392,11 +530,16 @@ function renderHomePage(): string {
     // ============================================================
     function showStationDropdown(keyword) {
       const dropdown = document.getElementById('station-dropdown');
+      if (allStations.length === 0) {
+        dropdown.innerHTML = '<div class="px-4 py-3 text-sm text-amber-800">站點清單未載入，無法搜尋。請先完成 D1 資料表與種子資料（見上方黃色提示）。</div>';
+        dropdown.classList.remove('hidden');
+        return;
+      }
       const kw = keyword.toLowerCase();
       const filtered = allStations.filter(s =>
-        s.name_zh.includes(keyword) ||
+        (s.name_zh && s.name_zh.includes(keyword)) ||
         (s.name_en && s.name_en.toLowerCase().includes(kw)) ||
-        s.id.toLowerCase().includes(kw)
+        (s.id && s.id.toLowerCase().includes(kw))
       ).slice(0, 15);
 
       if (filtered.length === 0) {
@@ -687,7 +830,7 @@ function renderStationDetailPage(stationId: string): string {
               <p class="text-gray-500">\${station.name_en || ''} &middot; \${station.line_name || station.line} &middot; \${station.district || ''}</p>
               <div class="flex flex-wrap gap-2 mt-2">
                 \${station.is_transfer_station ? '<span class="px-2 py-1 bg-yellow-100 text-yellow-700 rounded-full text-xs font-semibold"><i class="fas fa-exchange-alt mr-1"></i>轉乘站</span>' : ''}
-                \${pagerank.best_period ? \`<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold"><i class="fas fa-fire mr-1"></i>最佳時段：\${pagerank.best_period.time_period_label}（排名 #\${pagerank.best_period.pr_rank || '?'}）</span>\` : ''}
+                \${pagerank.best_period ? '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold"><i class="fas fa-fire mr-1"></i>最佳時段：' + pagerank.best_period.time_period_label + '（排名 #' + (pagerank.best_period.pr_rank || '?') + '）</span>' : ''}
               </div>
             </div>
             <a href="/?from=\${station.id}" class="px-4 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg text-sm font-semibold hover:shadow-lg transition-all no-underline">

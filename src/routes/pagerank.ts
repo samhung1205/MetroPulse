@@ -11,6 +11,7 @@ import {
   getPageRankByStation,
   getPageRankByPeriod,
 } from '../db/queries';
+import { jsonDbError } from '../lib/d1-response';
 
 const pagerank = new Hono<{ Bindings: Env }>();
 
@@ -32,7 +33,7 @@ pagerank.get('/', async (c) => {
   }
 
   try {
-    const rankings = await getTopPageRank(c.env.DB, timePeriod, topN);
+    const rankings = await getTopPageRank(c.env.mrt_rank_db, timePeriod, topN);
     
     return c.json({
       success: true,
@@ -42,7 +43,7 @@ pagerank.get('/', async (c) => {
       rankings,
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 
@@ -68,7 +69,7 @@ pagerank.get('/:stationId', async (c) => {
   const stationId = c.req.param('stationId');
 
   try {
-    const scores = await getPageRankByStation(c.env.DB, stationId);
+    const scores = await getPageRankByStation(c.env.mrt_rank_db, stationId);
     
     if (scores.length === 0) {
       return c.json({
@@ -86,7 +87,7 @@ pagerank.get('/:stationId', async (c) => {
       })),
     });
   } catch (error) {
-    return c.json({ success: false, error: String(error) }, 500);
+    return jsonDbError(c, error);
   }
 });
 
