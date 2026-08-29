@@ -22,7 +22,7 @@
 - **視覺化圖表**：Chart.js 總分比較與堆疊分析圖
 - **演算法說明頁**：公式推導與權重說明
 - **RESTful API**：完整的後端 API，可獨立使用
-- **🆕 SVG 捷運路線圖**：互動式示意圖，涵蓋5條路線100站，支援 hover、點擊選站、推薦高亮
+- **🆕 SVG 捷運路線圖**：互動式示意圖，涵蓋5條路線135站，支援 hover、點擊選站、推薦高亮
 - **🆕 站點詳情頁**：PageRank 時序折線圖、偏好特徵雷達圖、人流連結分析
 
 ### 未來擴充
@@ -107,7 +107,7 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 
 | 資料表 | 筆數 | 說明 |
 |--------|------|------|
-| stations | 100 | 台北捷運五大路線站點 |
+| stations | 135 | 台北捷運五大路線站點 |
 | pagerank_scores | 420 | 6 時段 × ~70 站的 PR 值 |
 | station_tags | 200 | 40 站 × 5 類偏好標籤 |
 | transition_matrix | 285 | 主要站間轉移機率 |
