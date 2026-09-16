@@ -1,5 +1,5 @@
 /**
- * MRT Rank — 推薦 API 路由
+ * MetroPulse — 推薦 API 路由
  * 
  * 核心推薦端點：接收使用者查詢條件，返回 Top N 推薦站點
  * 
@@ -21,7 +21,13 @@ import {
   RecommendationResponse,
 } from '../lib/types';
 import { computeRecommendations } from '../lib/recommender';
-import { getRecommendationCandidates, getStationById } from '../db/queries';
+import {
+  getRecommendationCandidates,
+  getStationById,
+  getLatestDataMonth,
+  getRealPageRankMap,
+  getRealTransitionMap,
+} from '../db/queries';
 import { jsonDbError } from '../lib/d1-response';
 
 const recommend = new Hono<{ Bindings: Env }>();
@@ -29,6 +35,9 @@ const recommend = new Hono<{ Bindings: Env }>();
 // 有效的時段與偏好值
 const VALID_PERIODS = Object.keys(TIME_PERIOD_LABELS);
 const VALID_PREFERENCES = Object.keys(PREFERENCE_LABELS);
+
+// 資料模式：auto（優先真實）/ real（強制真實）/ synthetic（強制合成）
+type DataMode = 'auto' | 'real' | 'synthetic';
 
 /**
  * GET /api/recommend
@@ -50,6 +59,7 @@ recommend.get('/', async (c) => {
   const timePeriod = c.req.query('time_period') as TimePeriod;
   const preference = (c.req.query('preference') || 'all') as PreferenceCategory;
   const topN = Math.min(Math.max(parseInt(c.req.query('top_n') || '5'), 1), 20);
+  const dataMode = (c.req.query('data_mode') || 'auto') as DataMode;
 
   // 參數驗證
   if (!from) {
@@ -87,14 +97,63 @@ recommend.get('/', async (c) => {
       }, 404);
     }
 
-    // Step 3: 取得所有候選資料
+    // Step 3: 決定資料來源（真實 vs 合成）
+    let usedRealData = false;
+    let realDataMonth: { year: number; month: number; label: string } | null = null;
+    let realPrMap: Map<string, { pr_value: number; normalized_score: number }> | null = null;
+    let realTransMap: Map<string, { flow_count: number; transition_prob: number }> | null = null;
+
+    if (dataMode !== 'synthetic') {
+      const latestMonth = await getLatestDataMonth(c.env.mrt_rank_db);
+      if (latestMonth && (dataMode === 'real' || dataMode === 'auto')) {
+        const [prMap, transMap] = await Promise.all([
+          getRealPageRankMap(c.env.mrt_rank_db, latestMonth.year, latestMonth.month, timePeriod),
+          getRealTransitionMap(c.env.mrt_rank_db, from, latestMonth.year, latestMonth.month, timePeriod),
+        ]);
+        if (prMap.size > 0) {
+          usedRealData = true;
+          realDataMonth = latestMonth;
+          realPrMap = prMap;
+          realTransMap = transMap;
+        }
+      }
+    }
+
+    // Step 4: 取得候選資料
     const candidates = await getRecommendationCandidates(
       c.env.mrt_rank_db,
       from,
       timePeriod
     );
 
-    // Step 4: 計算推薦
+    // 若有真實資料，覆蓋候選資料中的 PR 值和轉移機率
+    if (usedRealData && realPrMap && realTransMap) {
+      for (const candidate of candidates) {
+        const realPr = realPrMap.get(candidate.station.id);
+        if (realPr) {
+          candidate.prScore = {
+            station_id: candidate.station.id,
+            time_period: timePeriod,
+            pr_value: realPr.pr_value,
+            pr_rank: null,
+            normalized_score: realPr.normalized_score,
+          };
+        }
+        const realTrans = realTransMap.get(candidate.station.id);
+        if (realTrans) {
+          candidate.transitionProb = {
+            from_station_id: from,
+            to_station_id: candidate.station.id,
+            time_period: timePeriod,
+            raw_flow: realTrans.flow_count,
+            transition_prob: realTrans.transition_prob,
+            normalized_prob: realTrans.transition_prob,
+          };
+        }
+      }
+    }
+
+    // Step 5: 計算推薦
     const recommendations = computeRecommendations(
       from,
       timePeriod,
@@ -104,7 +163,7 @@ recommend.get('/', async (c) => {
       topN
     );
 
-    // Step 5: 組裝回應
+    // Step 6: 組裝回應
     const response: RecommendationResponse = {
       success: true,
       query: {
@@ -121,7 +180,9 @@ recommend.get('/', async (c) => {
         weights: DEFAULT_WEIGHTS,
         gamma: 0.85,
         total_stations_evaluated: candidates.length,
-      },
+        data_source: usedRealData ? 'real' : 'synthetic',
+        data_month: realDataMonth ? `${realDataMonth.year}年${realDataMonth.month}月` : null,
+      } as any,
     };
 
     return c.json(response);

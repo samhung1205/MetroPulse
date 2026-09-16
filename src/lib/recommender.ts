@@ -1,5 +1,5 @@
 /**
- * MRT Rank — 推薦引擎核心模組
+ * MetroPulse — 推薦引擎核心模組
  * 
  * 推薦分數公式：
  * RecommendationScore(i → j, t, pref) = 

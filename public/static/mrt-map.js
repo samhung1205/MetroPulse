@@ -2,7 +2,7 @@
  * MRT Rank — 台北捷運互動式 SVG 路線圖 v5
  *
  * v5 更新（全面修正為官方 TRTC 站號）：
- * - 淡水信義線 R：反向修正（R02=象山→R28=淡水），新增 R22A 新北投支線
+ * - 淡水信義線 R：反向修正（R01=廣慈/奉天宮→R28=淡水），新增 R22A 新北投支線
  * - 松山新店線 G：修正站號（G06=萬隆起正確計數），新增 G03A 小碧潭支線
  * - 文湖線 BR：修正站號（+1 補齊 BR03/BR05/BR06 麟光），東段延伸至 BR24
  * - 環狀線 Y：採官方 Y07（大坪林）~Y20（新北產業園區）完整編號
@@ -36,25 +36,25 @@ const MRTMap = (() => {
     BL04: { x: 190, y: 430 },
     BL05: { x: 233, y: 430 },
     BL06: { x: 276, y: 430 },
-    BL07: { x: 318, y: 430 },  // 板橋（轉Y線）
-    BL08: { x: 360, y: 430 },  // 新埔（轉Y線 新埔民生）
+    BL07: { x: 318, y: 430 },   // 板橋（轉Y線）
+    BL08: { x: 360, y: 430 },   // 新埔（轉Y線 新埔民生）
     BL09: { x: 400, y: 430 },
     BL10: { x: 440, y: 430 },
-    BL11: { x: 480, y: 430 },  // 西門（轉G線）
-    BL12: { x: 530, y: 430 },  // 台北車站（轉R線）
+    BL11: { x: 480, y: 430 },   // 西門（轉G線）
+    BL12: { x: 530, y: 430 },   // 台北車站（轉R線）
     BL13: { x: 580, y: 430 },
-    BL14: { x: 630, y: 430 },  // 忠孝新生（轉O線）
-    BL15: { x: 680, y: 430 },  // 忠孝復興（轉BR線）
-    BL16: { x: 725, y: 430 },
-    BL17: { x: 770, y: 430 },
-    BL18: { x: 810, y: 430 },
-    BL19: { x: 850, y: 430 },
-    BL20: { x: 885, y: 430 },
-    BL21: { x: 920, y: 430 },
-    BL22: { x: 980, y: 430 },  // 南港（轉BR線）
-    BL23: { x: 1030, y: 430 },  // 南港展覽館（轉BR線）
+    BL14: { x: 630, y: 430 },   // 忠孝新生（轉O線）
+    BL15: { x: 710, y: 430 },   // 忠孝復興（轉BR線）
+    BL16: { x: 760, y: 430 },
+    BL17: { x: 810, y: 430 },
+    BL18: { x: 850, y: 430 },   // 市政府
+    BL19: { x: 890, y: 430 },   // 永春
+    BL20: { x: 935, y: 430 },
+    BL21: { x: 980, y: 430 },
+    BL22: { x: 1020, y: 430 },  // 南港（轉BR線）
+    BL23: { x: 1080, y: 430 },  // 南港展覽館（轉BR線）
 
-    // ── 淡水信義線 R（垂直主幹 x=530；R28 淡水在頂，R02 象山在右下）──
+    // ── 淡水信義線 R（垂直主幹 x=530；R28 淡水在頂，R01 廣慈/奉天宮在右下）──
     R28:  { x: 210, y: 60 },  // 淡水（北端）
     R27:  { x: 260, y: 60 },  // 紅樹林
     R26:  { x: 310, y: 60 },  // 竹圍
@@ -77,12 +77,13 @@ const MRTMap = (() => {
     R10:  { x: 530, y: 430 },  // 台北車站（共站BL12）
     R09:  { x: 530, y: 470 },  // 台大醫院
     R08:  { x: 530, y: 510 },  // 中正紀念堂（轉G線）
-    R07:  { x: 580, y: 510 },  // 東門（轉O線）
-    R06:  { x: 630, y: 510 },  // 大安森林公園
-    R05:  { x: 680, y: 510 },  // 大安（轉BR線）
-    R04:  { x: 730, y: 510 },  // 信義安和
-    R03:  { x: 780, y: 510 },  // 台北101/世貿
-    R02:  { x: 830, y: 510 },  // 象山（南端）
+    R07:  { x: 600, y: 510 },  // 東門（轉O線）
+    R06:  { x: 650, y: 510 },  // 大安森林公園
+    R05:  { x: 710, y: 510 },  // 大安（轉BR線）
+    R04:  { x: 760, y: 510 },  // 信義安和
+    R03:  { x: 825, y: 510 },  // 台北101/世貿
+    R02:  { x: 900, y: 510 },  // 象山
+    R01:  { x: 940, y: 510 },  // 廣慈/奉天宮（南端終點）
 
     // ── 松山新店線 G（G01 新店→G19 松山，含 G03A 小碧潭支線）──
     G01:  { x: 645, y: 760 },  // 新店
@@ -91,41 +92,41 @@ const MRTMap = (() => {
     G03A: { x: 620, y: 720 },  // 小碧潭支線（七張左下）
     G04:  { x: 645, y: 670 },  // 大坪林（轉Y線）
     G05:  { x: 645, y: 640 },  // 景美
-    G06:  { x: 640, y: 610 },  // 萬隆
-    G07:  { x: 620, y: 580 },  // 公館
-    G08:  { x: 590, y: 560 },  // 台電大樓
-    G09:  { x: 560, y: 540 },  // 古亭（轉O線）
+    G06:  { x: 645, y: 610 },  // 萬隆
+    G07:  { x: 645, y: 580 },  // 公館
+    G08:  { x: 600, y: 563 },  // 台電大樓
+    G09:  { x: 560, y: 545 },  // 古亭（轉O線）
     G10:  { x: 530, y: 510 },  // 中正紀念堂（轉R線）
-    G11:  { x: 500, y: 470 },  // 小南門
+    G11:  { x: 480, y: 470 },  // 小南門
     G12:  { x: 480, y: 430 },  // 西門（共站BL11）
     G13:  { x: 480, y: 390 },  // 北門
     G14:  { x: 530, y: 390 },  // 中山（共站R11）
     G15:  { x: 630, y: 390 },  // 松江南京（轉O線）
-    G16:  { x: 700, y: 390 },  // 南京復興（轉BR線）
-    G17:  { x: 750, y: 390 },  // 台北小巨蛋
-    G18:  { x: 800, y: 390 },  // 南京三民
-    G19:  { x: 850, y: 390 },  // 松山
+    G16:  { x: 710, y: 390 },  // 南京復興（轉BR線）
+    G17:  { x: 770, y: 390 },  // 台北小巨蛋
+    G18:  { x: 830, y: 390 },  // 南京三民
+    G19:  { x: 890, y: 390 },  // 松山
 
     // ── 中和新蘆線 O — 中和線段（南勢角→大橋頭）──
     O01:  { x: 510, y: 710 },  // 南勢角
     O02:  { x: 510, y: 670 },  // 景安（轉Y線）
     O03:  { x: 510, y: 630 },  // 永安市場
     O04:  { x: 510, y: 590 },  // 頂溪
-    O05:  { x: 560, y: 540 },  // 古亭（共站G09）
-    O06:  { x: 580, y: 510 },  // 東門（共站R07）
+    O05:  { x: 560, y: 545 },  // 古亭（共站G09）
+    O06:  { x: 600, y: 510 },  // 東門（共站R07）
     O07:  { x: 630, y: 430 },  // 忠孝新生（共站BL14）
     O08:  { x: 630, y: 390 },  // 松江南京（共站G15）
-    O09:  { x: 630, y: 350 },  // 行天宮
+    O09:  { x: 630, y: 340 },  // 行天宮
     O10:  { x: 590, y: 320 },  // 中山國小
     O11:  { x: 530, y: 320 },  // 民權西路（轉R線）
     O12:  { x: 478, y: 320 },  // 大橋頭（分支點）
 
     // ── 蘆洲線分支（大橋頭→蘆洲，往西北）──
-    O50:  { x: 438, y: 290 },  // 三重國小
-    O51:  { x: 398, y: 260 },  // 三和國中
-    O52:  { x: 358, y: 230 },  // 徐匯中學
-    O53:  { x: 318, y: 200 },  // 三民高中
-    O54:  { x: 278, y: 170 },  // 蘆洲（終點）
+    O50:  { x: 410, y: 275 },  // 三重國小
+    O51:  { x: 370, y: 245 },  // 三和國中
+    O52:  { x: 330, y: 215 },  // 徐匯中學
+    O53:  { x: 290, y: 185 },  // 三民高中
+    O54:  { x: 250, y: 155 },  // 蘆洲（終點）
 
     // ── 新莊線分支（大橋頭→迴龍，往西南）──
     O13:  { x: 430, y: 320 },  // 台北橋
@@ -133,51 +134,51 @@ const MRTMap = (() => {
     O15:  { x: 334, y: 320 },  // 三重
     O16:  { x: 286, y: 320 },  // 先嗇宮
     O17:  { x: 250, y: 320 },  // 頭前庄（轉Y線）
-    O18:  { x: 205, y: 320 },  // 新莊
-    O19:  { x: 162, y: 320 },  // 輔大
-    O20:  { x: 118, y: 320 },  // 丹鳳
-    O21:  { x:  78, y: 320 },  // 迴龍（終點）
+    O18:  { x: 190, y: 320 },  // 新莊
+    O19:  { x: 150, y: 320 },  // 輔大
+    O20:  { x: 110, y: 320 },  // 丹鳳
+    O21:  { x:  70, y: 320 },  // 迴龍（終點）
 
     // ── 文湖線 BR（BR01~BR24，含 BR03/BR05/BR06 新站）──
-    BR01: { x: 900, y: 720 },  // 動物園
-    BR02: { x: 870, y: 695 },  // 木柵
-    BR03: { x: 840, y: 670 },  // 萬芳社區（新）
-    BR04: { x: 810, y: 645 },  // 萬芳醫院
-    BR05: { x: 780, y: 620 },  // 辛亥（新）
-    BR06: { x: 750, y: 595 },  // 麟光（新）
-    BR07: { x: 720, y: 570 },  // 六張犁
-    BR08: { x: 690, y: 545 },  // 科技大樓
-    BR09: { x: 680, y: 510 },  // 大安（共站R05）
-    BR10: { x: 680, y: 430 },  // 忠孝復興（共站BL15）
-    BR11: { x: 700, y: 390 },  // 南京復興（共站G16）
-    BR12: { x: 720, y: 340 },  // 中山國中
-    BR13: { x: 735, y: 300 },  // 松山機場
-    BR14: { x: 760, y: 250 },  // 大直
-    BR15: { x: 790, y: 230 },  // 劍南路
-    BR16: { x: 830, y: 230 },  // 西湖
-    BR17: { x: 870, y: 230 },  // 港墘
-    BR18: { x: 910, y: 230 },  // 文德
-    BR19: { x: 950, y: 230 },  // 內湖
+    BR01: { x: 910, y: 730 },  // 動物園
+    BR02: { x: 880, y: 705 },  // 木柵
+    BR03: { x: 850, y: 680 },  // 萬芳社區（新）
+    BR04: { x: 820, y: 655 },  // 萬芳醫院
+    BR05: { x: 790, y: 630 },  // 辛亥（新）
+    BR06: { x: 760, y: 605 },  // 麟光（新）
+    BR07: { x: 730, y: 580 },  // 六張犁
+    BR08: { x: 710, y: 550 },  // 科技大樓
+    BR09: { x: 710, y: 510 },  // 大安（共站R05）
+    BR10: { x: 710, y: 430 },  // 忠孝復興（共站BL15）
+    BR11: { x: 710, y: 390 },  // 南京復興（共站G16）
+    BR12: { x: 710, y: 330 },  // 中山國中
+    BR13: { x: 710, y: 280 },  // 松山機場
+    BR14: { x: 710, y: 240 },  // 大直
+    BR15: { x: 790, y: 220 },  // 劍南路
+    BR16: { x: 840, y: 220 },  // 西湖
+    BR17: { x: 890, y: 220 },  // 港墘
+    BR18: { x: 940, y: 220 },  // 文德
+    BR19: { x: 990, y: 220 },  // 內湖
     // 東段延伸（大湖公園→南港展覽館）
-    BR20: { x: 990, y: 270 },  // 大湖公園
-    BR21: { x: 1030, y: 310 },  // 葫洲
-    BR22: { x: 1030, y: 350 },  // 東湖
-    BR23: { x: 1030, y: 390 },  // 南港軟體園區
-    BR24: { x: 1030, y: 430 },  // 南港展覽館（共站BL23）
+    BR20: { x: 1040, y: 260 },  // 大湖公園
+    BR21: { x: 1080, y: 310 },  // 葫洲
+    BR22: { x: 1080, y: 350 },  // 東湖
+    BR23: { x: 1080, y: 390 },  // 南港軟體園區
+    BR24: { x: 1080, y: 430 },  // 南港展覽館（共站BL23）
     // BR24: { x: 990, y: 392 },  // 南港展覽館（共站BL23）
 
     // ── 環狀線 Y（Y07大坪林→Y20新北產業園區）──
     // Y07 共用 G04（起點）；Y11/Y16/Y17 使用 Y 線專用座標，避免路徑鋸齒
-    Y08:  { x: 620, y: 670 },  // 十四張 645 670
-    Y09:  { x: 590, y: 670 },  // 秀朗橋
-    Y10:  { x: 550, y: 670 },  // 景平
+    Y08:  { x: 615, y: 670 },  // 十四張 645 670
+    Y09:  { x: 580, y: 670 },  // 秀朗橋
+    Y10:  { x: 545, y: 670 },  // 景平
     Y11:  { x: 510, y: 670 },  // 景安（Y 線專用；O02 另顯示 O 線標籤）
     Y12:  { x: 460, y: 610 },  // 中和
     Y13:  { x: 420, y: 560 },  // 橋和
     Y14:  { x: 390, y: 520 },  // 中原
     Y15:  { x: 350, y: 480 },  // 板新
     Y16:  { x: 318, y: 430 },  // 板橋（Y 線專用；BL07 另顯示 BL 標籤）
-    Y17:  { x: 330, y: 390 },  // 新埔民生（Y 線專用；BL08 另顯示 BL 標籤）
+    Y17:  { x: 318, y: 380 },  // 新埔民生（Y 線專用；BL08 另顯示 BL 標籤）
     Y18:  { x: 250, y: 320 },  // 頭前庄（轉O 線）
     Y19:  { x: 250, y: 280 },  // 幸福
     Y20:  { x: 250, y: 240 },  // 新北產業園區
@@ -193,7 +194,7 @@ const MRTMap = (() => {
     // 淡水信義線：北段垂直 + 南段斜出 + R22A 新北投支線
     R_N:  ['R28','R27','R26','R25','R24','R23','R22','R21','R20','R19','R18','R17',
            'R16','R15','R14','R13','R12','R11','R10'],
-    R_S:  ['R10','R09','R08','R07','R06','R05','R04','R03','R02'],
+    R_S:  ['R10','R09','R08','R07','R06','R05','R04','R03','R02','R01'],
     R_XB: ['R22','R22A'],
     // 松山新店線 + G03A 小碧潭支線
     G_S:  ['G01','G02','G03','G04','G05','G06','G07','G08','G09','G10','G11','G12'],
@@ -270,23 +271,23 @@ const MRTMap = (() => {
   const LABEL_OFFSETS = {
     // ── 板南線 BL（交錯上下）──
     BL01: { dx:-18, dy:  0, anchor:'end',    idDy: 11 },
-    BL02: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
+    BL02: { dx:  0, dy:-16, anchor:'middle', idDy:-11 },
     BL03: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    BL04: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
+    BL04: { dx:  0, dy:-16, anchor:'middle', idDy:-11 },
     BL05: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    BL06: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    BL07: { dx: -6, dy: 18, anchor:'middle', idDy: 11 },
-    BL08: { dx:  3, dy:-18, anchor:'middle', idDy:-11 },
-    BL09: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    BL10: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    BL11: { dx:  6, dy:-18, anchor:'start',  idDy:-11 },
-    BL12: { dx:  6, dy:-18, anchor:'start',  idDy:-11 },
-    BL13: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    BL14: { dx: -6, dy:-18, anchor:'end',    idDy:-11 },
+    BL06: { dx:  0, dy:-16, anchor:'middle', idDy:-11 },
+    BL07: { dx: -6, dy: 18, anchor:'end',    idDy: 11 },
+    BL08: { dx:  6, dy:-16, anchor:'middle', idDy:-11 },
+    BL09: { dx:  0, dy: 15, anchor:'middle', idDy: 11 },
+    BL10: { dx:  0, dy:-15, anchor:'middle', idDy:-11 },
+    BL11: { dx:  6, dy:-15, anchor:'start',  idDy:-11 },
+    BL12: { dx: 10, dy:-15, anchor:'start',  idDy:-11 },
+    BL13: { dx:  0, dy: 15, anchor:'middle', idDy: 11 },
+    BL14: { dx: 12, dy:-15, anchor:'start',  idDy:-11 },
     BL15: { dx: -6, dy: 18, anchor:'end',    idDy: 11 },
-    BL16: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
+    BL16: { dx:  0, dy:-15, anchor:'middle', idDy:-11 },
     BL17: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    BL18: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
+    BL18: { dx:  0, dy:-15, anchor:'middle', idDy:-11 },
     BL19: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
     BL20: { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
     BL21: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
@@ -294,34 +295,35 @@ const MRTMap = (() => {
     BL23: { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
 
     // ── 淡水信義線 R（左右交錯；南段向下偏移）──
-    R28:  { dx:-18, dy:  0, anchor:'end',    idDy: -11 },
-    R27:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R26:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R25:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R24:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R23:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R22:  { dx:  0, dy:-20, anchor:'middle', idDy: -11 },
-    R22A: { dx: 18, dy: 0,  anchor:'start',  idDy: -11 },
-    R21:  { dx:-18, dy: 0,  anchor:'end',    idDy: 11 },
-    R20:  { dx: 18, dy: 0,  anchor:'start',  idDy: 11 },
-    R19:  { dx:-18, dy: 0,  anchor:'end',    idDy: 11 },
-    R18:  { dx: 18, dy: 0,  anchor:'start',  idDy: 11 },
-    R17:  { dx:-18, dy: 0,  anchor:'end',    idDy: 11 },
-    R16:  { dx: 18, dy: 0,  anchor:'start',  idDy: 11 },
-    R15:  { dx:-18, dy: 0,  anchor:'end',    idDy: 11 },
-    R14:  { dx: 18, dy: 0,  anchor:'start',  idDy: 11 },
-    R13:  { dx: -8, dy:-12, anchor:'end',    idDy:-11 },
-    R12:  { dx: 18, dy: 0,  anchor:'start',  idDy:-11 },
+    R28:  { dx:-14, dy:  0, anchor:'end',    idDy: -11 },
+    R27:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R26:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R25:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R24:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R23:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R22:  { dx:  0, dy:-18, anchor:'middle', idDy: -11 },
+    R22A: { dx: 14, dy: 0,  anchor:'start',  idDy: -11 },
+    R21:  { dx:-12, dy: 0,  anchor:'end',    idDy: 11 },
+    R20:  { dx: 12, dy: 0,  anchor:'start',  idDy: 11 },
+    R19:  { dx:-12, dy: 0,  anchor:'end',    idDy: 11 },
+    R18:  { dx: 12, dy: 0,  anchor:'start',  idDy: 11 },
+    R17:  { dx:-12, dy: 0,  anchor:'end',    idDy: 11 },
+    R16:  { dx: 12, dy: 0,  anchor:'start',  idDy: 11 },
+    R15:  { dx:-12, dy: 0,  anchor:'end',    idDy: 11 },
+    R14:  { dx: 12, dy: 0 , anchor:'start',  idDy:-11 },
+    R13:  { dx: -8, dy:-20, anchor:'end',    idDy:-11 },
+    R12:  { dx: 12, dy: 0,  anchor:'start',  idDy:-11 },
     R11:  { dx: -8, dy:-12, anchor:'end',    idDy:-11 },
     // R10 skipped（共站 BL12）
-    R09:  { dx: 18, dy:  0, anchor:'start',  idDy: 11 },
+    R09:  { dx: 12, dy:  2, anchor:'start',  idDy: 11 },
     R08:  { dx:-18, dy:  0, anchor:'end',    idDy: 11 },
-    R07:  { dx:  8, dy: 18, anchor:'start',  idDy: 11 },
+    R07:  { dx:  4, dy: 18, anchor:'middle', idDy: 11 },
     R06:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
     R05:  { dx: -8, dy: 18, anchor:'end',    idDy: 11 },
     R04:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    R03:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    R02:  { dx: 20, dy:  0, anchor:'start',  idDy: 11 },
+    R03:  { dx: 12, dy:-18, anchor:'middle', idDy:-11 },
+    R02:  { dx: 12, dy:-18, anchor:'middle', idDy:-11 },
+    R01:  { dx: 20, dy:  0, anchor:'start',  idDy: 11 },
 
     // ── 松山新店線 G ──
     G01:  { dx:  0, dy:18, anchor:'middle',idDy: 11 },
@@ -331,27 +333,27 @@ const MRTMap = (() => {
     G04:  { dx: 18, dy: 0, anchor:'start', idDy: 11 },
     G05:  { dx: 18, dy: 0, anchor:'start', idDy: 11 },
     G06:  { dx: 18, dy: 0, anchor:'start', idDy: 11 },
-    G07:  { dx:-18, dy: 3, anchor:'end',   idDy: 11 },
-    G08:  { dx: 18, dy:-3, anchor:'start', idDy:-11 },
+    G07:  { dx: 18, dy: 0, anchor:'start', idDy: 11 },
+    G08:  { dx: 12, dy:-5, anchor:'start', idDy:-11 },
     G09:  { dx:-18, dy: 0, anchor:'end',   idDy: 11 },
     // G10/G12/G14 skipped
     G11:  { dx:-18, dy: 0, anchor:'end',   idDy:-11 },
     G13:  { dx: -8, dy:-12, anchor:'end',  idDy:-11 },
     G15:  { dx: -8, dy:-18, anchor:'end',  idDy:-11 },
     G16:  { dx: -8, dy:-18, anchor:'end',  idDy:-11 },
-    G17:  { dx:  0, dy:-18, anchor:'middle',idDy:-11 },
-    G18:  { dx:  0, dy:-18, anchor:'middle',idDy:-11 },
+    G17:  { dx: -4, dy:-18, anchor:'middle',idDy:-11 },
+    G18:  { dx:  4, dy:-18, anchor:'middle',idDy:-11 },
     G19:  { dx:  0, dy:-18, anchor:'middle',idDy:-11 },
 
     // ── 中和新蘆線 O — 中和線主線段 ──
     O01:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
     O02:  { dx:-18, dy:  0, anchor:'end',    idDy: 11 },
-    O03:  { dx: 18, dy:  0, anchor:'start',  idDy: 11 },
+    O03:  { dx: 16, dy:  0, anchor:'start',  idDy: 11 },
     O04:  { dx: 18, dy:  3, anchor:'start',  idDy: 11 },
     // O05/O06/O07/O08/O11 skipped
     O09:  { dx:  8, dy: -8, anchor:'start',  idDy:-11 },
     O10:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    O12:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
+    O12:  { dx:  0, dy: 20, anchor:'middle', idDy: 11 },
 
     // ── 蘆洲線 O（標籤偏向右上，避免與新莊線重疊）──
     O50:  { dx: 15, dy: -8, anchor:'start', idDy:-11 },
@@ -361,14 +363,14 @@ const MRTMap = (() => {
     O54:  { dx: 15, dy: -8, anchor:'start', idDy:-11 },
 
     // ── 新莊線 O（標籤交錯上下）──
-    O13:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
-    O14:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
+    O13:  { dx:  0, dy: 20, anchor:'middle', idDy: 11 },
+    O14:  { dx:  0, dy: 20, anchor:'middle', idDy: 11 },
     O15:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
     O16:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    O17:  { dx:  8, dy: 18, anchor:'end',    idDy: 11 },
-    O18:  { dx:  0, dy: 18, anchor:'middle', idDy: 11 },
+    O17:  { dx:  5, dy: 20, anchor:'end',    idDy: 11 },
+    O18:  { dx:  0, dy: 20, anchor:'middle', idDy: 11 },
     O19:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
-    O20:  { dx:  0, dy: 19, anchor:'middle', idDy: 11 },
+    O20:  { dx:  0, dy: 20, anchor:'middle', idDy: 11 },
     O21:  { dx:-18, dy:  0, anchor:'end',    idDy: 11 },
 
     // ── 文湖線 BR ──
@@ -405,7 +407,7 @@ const MRTMap = (() => {
     Y14:  { dx:-18, dy:  3, anchor:'end',    idDy: 11 },
     Y15:  { dx:-18, dy:  3, anchor:'end',    idDy: 11 },
     Y16:  { dx:  0, dy:  0, anchor:'middle', idDy:  0 }, // SKIP_LABEL
-    Y17:  { dx:  0, dy:  0, anchor:'middle', idDy:  0 }, // SKIP_LABEL
+    Y17:  { dx: 16, dy:  0, anchor:'start',  idDy:-11 }, // secondary transfer label kept clear of BL08
     Y19:  { dx:-18, dy:  0, anchor:'end',    idDy: 11 },
     Y20:  { dx:  0, dy:-18, anchor:'middle', idDy:-11 },
   };
@@ -431,11 +433,26 @@ const MRTMap = (() => {
   // 狀態
   // ============================================================
   let _svgEl = null;
+  let _containerEl = null;
   let _stationData = {};
   let _selectedStation = null;
+  let _draftStation = null;
   let _highlightedStations = new Set();
   let _onSelectCallback = null;
   let _tooltip = null;
+  let _stationChoice = null;
+  let _choiceOpener = null;
+  let _stationGroups = [];
+  let _groupByStationId = new Map();
+  let _panFrame = null;
+  let _pendingView = null;
+  let _pointerState = null;
+  let _suppressNextStationClick = false;
+
+  const OVERVIEW = Object.freeze({ x: -10, y: 0, width: 1140, height: 820 });
+  const MAX_ZOOM = 4;
+  const ZOOM_STEP = 1.35;
+  let _view = { ...OVERVIEW };
 
   // ============================================================
   // 初始化
@@ -443,37 +460,50 @@ const MRTMap = (() => {
   function init(containerId, stations, options = {}) {
     const container = document.getElementById(containerId);
     if (!container) return;
+    _containerEl = container;
 
+    const tokens = getComputedStyle(document.documentElement);
+    Object.keys(LINE_COLORS).forEach(code => {
+      const token = tokens.getPropertyValue('--mp-line-' + code.toLowerCase()).trim();
+      if (token) LINE_COLORS[code] = token;
+    });
+    _stationData = {};
     stations.forEach(s => { _stationData[s.id] = s; });
     _onSelectCallback = options.onSelect || null;
+    _stationGroups = buildStationGroups();
+    _groupByStationId = new Map();
+    _stationGroups.forEach(group => group.ids.forEach(id => _groupByStationId.set(id, group)));
+    _view = { ...OVERVIEW };
 
     container.innerHTML = '';
+    container.classList.add('mrt-map-root');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '-90 0 1240 820');
+    svg.setAttribute('viewBox', viewBoxText(_view));
+    svg.setAttribute('role', 'group');
+    svg.setAttribute('aria-label', '捷運路線示意圖。可用地圖按鈕縮放與重設；鍵盤選站請使用出發站搜尋。');
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.style.maxWidth = (options.width || 1240) + 'px';
     svg.style.fontFamily = "'Noto Sans TC', 'Microsoft JhengHei', 'PingFang TC', sans-serif";
     _svgEl = svg;
 
+    if (_tooltip) _tooltip.remove();
     _tooltip = document.createElement('div');
     _tooltip.className = 'mrt-map-tooltip';
-    _tooltip.style.cssText = `
-      position: fixed; display: none; pointer-events: none; z-index: 9999;
-      background: rgba(20,20,20,0.93); color: #fff; border-radius: 10px;
-      padding: 8px 14px; font-size: 13px; line-height: 1.6;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.35); backdrop-filter: blur(4px);
-      max-width: 260px; white-space: nowrap;
-    `;
     document.body.appendChild(_tooltip);
 
-    drawLegend(svg);
+    if (!options.externalLegend) drawLegend(svg);
     drawLines(svg);
     drawTransferLinks(svg);
     drawStations(svg);
     drawLabels(svg);
+    drawHitTargets(svg);
+    setupPointerPan(svg);
 
     container.appendChild(svg);
+    createStationChoice(container);
+    updateHighlight();
   }
 
   // ============================================================
@@ -529,6 +559,7 @@ const MRTMap = (() => {
     }
 
     // 環狀線先畫（在最底層）
+    polyline(LINE_PATHS.Y, 'Y', { stroke: '#687780', 'stroke-width': '9' });
     polyline(LINE_PATHS.Y, 'Y');
 
     // 板南線
@@ -586,27 +617,18 @@ const MRTMap = (() => {
   // 站點圓圈
   // ============================================================
   function drawStations(svg) {
-    const allIds = new Set([
-      ...Object.keys(STATION_COORDS),
-      ...Object.values(LINE_PATHS).flat(),
-    ]);
-    allIds.forEach(id => {
-      const coord = STATION_COORDS[id];
-      if (!coord) return;
-      const isTransfer = TRANSFER_STATIONS.has(id);
-      const lineCode = id.replace(/[0-9A-Z_]+$/, '').replace(/[^A-Z]/g, '') || 'BL';
-      const color = LINE_COLORS[lineCode] || '#999';
-      const r = isTransfer ? 8 : 5;
-
+    _stationGroups.forEach(group => {
+      const isTransfer = group.ids.length > 1 || group.ids.some(id => TRANSFER_STATIONS.has(id));
+      const lineCode = stationLine(group.ids[0]);
+      const color = group.ids.length > 1 ? '#172B32' : (LINE_COLORS[lineCode] || '#999');
       const circle = createSVGElement('circle', {
-        cx: coord.x, cy: coord.y, r,
+        cx: group.x, cy: group.y, r: isTransfer ? 8 : 5,
         fill: 'white', stroke: color, 'stroke-width': isTransfer ? 3 : 2,
-        style: 'cursor:pointer',
-        'data-id': id,
+        'data-id': group.ids[0],
+        'data-station-marker': group.key,
+        'data-station-ids': group.ids.join(' '),
+        'pointer-events': 'none',
       });
-      circle.addEventListener('click', () => handleStationClick(id));
-      circle.addEventListener('mousemove', (e) => showTooltip(e, id));
-      circle.addEventListener('mouseleave', hideTooltip);
       svg.appendChild(circle);
     });
   }
@@ -615,56 +637,308 @@ const MRTMap = (() => {
   // 站名標籤
   // ============================================================
   function drawLabels(svg) {
-    Object.entries(STATION_COORDS).forEach(([id, coord]) => {
-      if (SKIP_LABEL.has(id)) return;
+    _stationGroups.forEach(group => {
+      const id = group.ids.find(candidate => !SKIP_LABEL.has(candidate)) || group.ids[0];
+      const coord = STATION_COORDS[id];
       const off = LABEL_OFFSETS[id] || { dx: 0, dy: -18, anchor: 'middle', idDy: -11 };
       const name = getStationName(id);
       if (!name) return;
 
       const tx = coord.x + off.dx;
       const ty = coord.y + off.dy;
-      const lineCode = (id.match(/^[A-Z]+/) || ['BL'])[0];
-      const color = LINE_COLORS[lineCode] || '#333';
+      const labelGroup = createSVGElement('g', {
+        'class': 'mrt-station-label',
+        'data-station-label': group.key,
+        'data-station-ids': group.ids.join(' '),
+        'pointer-events': 'none',
+      });
 
-      svg.appendChild(createText(tx, ty, name, {
-        'font-size': '10', fill: color, 'text-anchor': off.anchor,
+      labelGroup.appendChild(createText(tx, ty, name, {
+        'class': 'mrt-station-name',
+        'font-size': '12', fill: '#172B32', 'text-anchor': off.anchor,
         'dominant-baseline': 'middle', 'font-weight': '500',
         'stroke': '#fff', 'stroke-width': '3', 'paint-order': 'stroke',
-        'stroke-linejoin': 'round',
+        'stroke-linejoin': 'round', 'pointer-events': 'none',
       }));
-      svg.appendChild(createText(tx, ty + off.idDy, id, {
-        'font-size': '8', fill: '#999', 'text-anchor': off.anchor,
+      // Preserve the approved overview label width. Co-located secondary IDs are
+      // exposed by the explicit station picker and accessible hit-target name.
+      labelGroup.appendChild(createText(tx, ty + off.idDy, id, {
+        'class': 'mrt-station-code',
+        'font-size': '9', fill: '#52626A', 'text-anchor': off.anchor,
         'dominant-baseline': 'middle',
         'stroke': '#fff', 'stroke-width': '2', 'paint-order': 'stroke',
         'stroke-linejoin': 'round',
       }));
+      svg.appendChild(labelGroup);
     });
   }
 
   // ============================================================
   // 工具函式
   // ============================================================
+  function stationLine(id) {
+    return (id.match(/^[A-Z]+/) || ['BL'])[0];
+  }
+
+  function buildStationGroups() {
+    const groups = new Map();
+    Object.entries(STATION_COORDS).forEach(([id, coord]) => {
+      const key = coord.x + ':' + coord.y;
+      if (!groups.has(key)) groups.set(key, { key, x: coord.x, y: coord.y, ids: [] });
+      groups.get(key).ids.push(id);
+    });
+    return Array.from(groups.values()).map(group => ({
+      ...group,
+      ids: group.ids.sort((a, b) => Number(SKIP_LABEL.has(a)) - Number(SKIP_LABEL.has(b))),
+    }));
+  }
+
+  function viewBoxText(view) {
+    return [view.x, view.y, view.width, view.height].map(value => Number(value.toFixed(3))).join(' ');
+  }
+
+  function clampView(view) {
+    const minWidth = OVERVIEW.width / MAX_ZOOM;
+    const width = Math.min(OVERVIEW.width, Math.max(minWidth, view.width));
+    const height = width * (OVERVIEW.height / OVERVIEW.width);
+    const maxX = OVERVIEW.x + OVERVIEW.width - width;
+    const maxY = OVERVIEW.y + OVERVIEW.height - height;
+    return {
+      x: Math.min(maxX, Math.max(OVERVIEW.x, view.x)),
+      y: Math.min(maxY, Math.max(OVERVIEW.y, view.y)),
+      width,
+      height,
+    };
+  }
+
+  function applyView(view) {
+    if (!_svgEl) return;
+    _view = clampView(view);
+    _svgEl.setAttribute('viewBox', viewBoxText(_view));
+    const zoom = OVERVIEW.width / _view.width;
+    _svgEl.classList.toggle('is-map-detail', zoom >= 1.55);
+    if (_containerEl) {
+      _containerEl.dataset.zoom = zoom.toFixed(2);
+      _containerEl.dispatchEvent(new CustomEvent('mrtmapviewchange', { detail: getViewState() }));
+    }
+  }
+
+  function queueView(view) {
+    _pendingView = view;
+    if (_panFrame) return;
+    _panFrame = requestAnimationFrame(() => {
+      _panFrame = null;
+      if (_pendingView) applyView(_pendingView);
+      _pendingView = null;
+    });
+  }
+
+  function zoomBy(multiplier) {
+    const nextWidth = _view.width / multiplier;
+    const nextHeight = nextWidth * (OVERVIEW.height / OVERVIEW.width);
+    const centerX = _view.x + _view.width / 2;
+    const centerY = _view.y + _view.height / 2;
+    applyView({
+      x: centerX - nextWidth / 2,
+      y: centerY - nextHeight / 2,
+      width: nextWidth,
+      height: nextHeight,
+    });
+    closeStationChoice({ restoreFocus: false });
+    hideTooltip();
+  }
+
+  function zoomIn() {
+    zoomBy(ZOOM_STEP);
+  }
+
+  function zoomOut() {
+    zoomBy(1 / ZOOM_STEP);
+  }
+
+  function resetView() {
+    applyView({ ...OVERVIEW });
+    closeStationChoice({ restoreFocus: false });
+    hideTooltip();
+  }
+
+  function getViewState() {
+    return {
+      zoom: OVERVIEW.width / _view.width,
+      minZoom: 1,
+      maxZoom: MAX_ZOOM,
+      isOverview: Math.abs(_view.width - OVERVIEW.width) < 0.5,
+    };
+  }
+
+  function setupPointerPan(svg) {
+    svg.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || event.button !== 0) return;
+      _pointerState = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        startView: { ..._view },
+        dragged: false,
+      };
+    });
+    svg.addEventListener('pointermove', event => {
+      if (!_pointerState || _pointerState.id !== event.pointerId) return;
+      const dx = event.clientX - _pointerState.x;
+      const dy = event.clientY - _pointerState.y;
+      if (!_pointerState.dragged && Math.hypot(dx, dy) < 6) return;
+      if (!_pointerState.dragged) {
+        _pointerState.dragged = true;
+        svg.setPointerCapture(event.pointerId);
+      }
+      svg.classList.add('is-panning');
+      closeStationChoice({ restoreFocus: false });
+      hideTooltip();
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      event.preventDefault();
+      queueView({
+        ..._pointerState.startView,
+        x: _pointerState.startView.x - (dx / rect.width) * _pointerState.startView.width,
+        y: _pointerState.startView.y - (dy / rect.height) * _pointerState.startView.height,
+      });
+    });
+    const finishPointer = event => {
+      if (!_pointerState || _pointerState.id !== event.pointerId) return;
+      if (_pointerState.dragged) {
+        _suppressNextStationClick = true;
+        setTimeout(() => { _suppressNextStationClick = false; }, 0);
+      }
+      svg.classList.remove('is-panning');
+      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+      _pointerState = null;
+    };
+    svg.addEventListener('pointerup', finishPointer);
+    svg.addEventListener('pointercancel', finishPointer);
+  }
+
+  function drawHitTargets(svg) {
+    const layer = createSVGElement('g', { 'class': 'mrt-station-hit-layer' });
+    _stationGroups.forEach(group => {
+      const isTransfer = group.ids.length > 1 || group.ids.some(id => TRANSFER_STATIONS.has(id));
+      const hit = createSVGElement('circle', {
+        cx: group.x,
+        cy: group.y,
+        r: isTransfer ? 15 : 12,
+        fill: 'transparent',
+        'class': 'mrt-station-hit',
+        'data-station-target': group.key,
+        'data-station-ids': group.ids.join(' '),
+        'tabindex': '-1',
+        'role': 'button',
+        'aria-label': getStationName(group.ids[0]) + '，站碼 ' + group.ids.join('、'),
+      });
+      hit.addEventListener('click', event => handleStationGroupClick(event, group));
+      hit.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          handleStationGroupClick(event, group);
+        }
+      });
+      hit.addEventListener('pointerenter', event => showTooltip(event, group));
+      hit.addEventListener('pointermove', event => showTooltip(event, group));
+      hit.addEventListener('pointerleave', hideTooltip);
+      layer.appendChild(hit);
+    });
+    svg.appendChild(layer);
+  }
+
+  function createStationChoice(container) {
+    const choice = document.createElement('div');
+    choice.className = 'mrt-station-choice';
+    choice.hidden = true;
+    choice.setAttribute('role', 'dialog');
+    choice.setAttribute('aria-modal', 'false');
+    choice.setAttribute('aria-labelledby', 'mrt-station-choice-title');
+    choice.innerHTML = '<div class="mrt-station-choice-heading"><div><h3 id="mrt-station-choice-title"></h3><p>此轉乘節點對應多個站碼，請明確選擇。</p></div><button type="button" class="mrt-station-choice-close" aria-label="關閉轉乘站選擇">關閉</button></div><div class="mrt-station-choice-options"></div>';
+    choice.querySelector('.mrt-station-choice-close').addEventListener('click', () => closeStationChoice());
+    choice.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeStationChoice();
+      }
+    });
+    container.appendChild(choice);
+    _stationChoice = choice;
+  }
+
+  function openStationChoice(group, opener) {
+    if (!_stationChoice) return;
+    _choiceOpener = opener || null;
+    const primary = group.ids.find(id => _stationData[id]) || group.ids[0];
+    _stationChoice.querySelector('h3').textContent = getStationName(primary);
+    const options = _stationChoice.querySelector('.mrt-station-choice-options');
+    options.replaceChildren();
+    group.ids.forEach(id => {
+      const button = document.createElement('button');
+      const line = stationLine(id);
+      button.type = 'button';
+      button.className = 'mrt-station-choice-option';
+      button.disabled = !_stationData[id];
+      button.setAttribute('aria-label', id + ' ' + (LINE_NAMES[line] || '路線未知') + (button.disabled ? '，目前無法選取' : ''));
+      const code = document.createElement('span');
+      code.className = 'mp-route-badge';
+      code.dataset.route = line;
+      code.textContent = id;
+      const name = document.createElement('span');
+      name.textContent = LINE_NAMES[line] || '路線未知';
+      button.append(code, name);
+      options.appendChild(button);
+      button.addEventListener('click', () => {
+        const returnFocus = _choiceOpener;
+        closeStationChoice({ restoreFocus: false });
+        chooseStation(id);
+        if (returnFocus && typeof returnFocus.focus === 'function') {
+          requestAnimationFrame(() => returnFocus.focus({ preventScroll: true }));
+        }
+      });
+    });
+    _stationChoice.hidden = false;
+    const first = options.querySelector('button:not(:disabled)') || _stationChoice.querySelector('button');
+    requestAnimationFrame(() => first.focus());
+  }
+
+  function closeStationChoice({ restoreFocus = true } = {}) {
+    if (!_stationChoice || _stationChoice.hidden) return;
+    _stationChoice.hidden = true;
+    if (restoreFocus && _choiceOpener && typeof _choiceOpener.focus === 'function') _choiceOpener.focus({ preventScroll: true });
+    _choiceOpener = null;
+  }
+
   function getStationName(id) {
     if (_stationData[id]) return _stationData[id].name_zh;
     if (Y_STATION_NAMES[id]) return Y_STATION_NAMES[id];
+    if (id === 'R01') return '廣慈/奉天宮';
     return id;
   }
 
-  function handleStationClick(id) {
-    _selectedStation = id;
+  function handleStationGroupClick(event, group) {
+    if (_suppressNextStationClick) return;
+    hideTooltip();
+    if (group.ids.length > 1) {
+      openStationChoice(group, event.currentTarget);
+      return;
+    }
+    chooseStation(group.ids[0]);
+  }
+
+  function chooseStation(id) {
+    _draftStation = id;
     if (_onSelectCallback) _onSelectCallback(id, _stationData[id] || null);
     updateHighlight();
   }
 
-  function showTooltip(e, id) {
-    const name = getStationName(id);
-    const data = _stationData[id];
-    let html = `<strong>${name}</strong> <span style="opacity:0.6;font-size:11px">${id}</span>`;
-    if (data) {
-      html += `<br><span style="opacity:0.75">${data.line_name || ''}</span>`;
-      if (data.district) html += ` · ${data.district}`;
-    }
-    _tooltip.innerHTML = html;
+  function showTooltip(e, group) {
+    if (!_tooltip || (_stationChoice && !_stationChoice.hidden) || (_pointerState && _pointerState.dragged)) return;
+    const primary = group.ids.find(id => _stationData[id]) || group.ids[0];
+    const data = _stationData[primary];
+    _tooltip.textContent = getStationName(primary) + ' · ' + group.ids.join(' / ') + (data?.district ? ' · ' + data.district : '');
     _tooltip.style.display = 'block';
     _tooltip.style.left = (e.clientX + 14) + 'px';
     _tooltip.style.top  = (e.clientY - 10) + 'px';
@@ -676,21 +950,69 @@ const MRTMap = (() => {
 
   function updateHighlight() {
     if (!_svgEl) return;
-    _svgEl.querySelectorAll('circle[data-id]').forEach(el => {
-      const id = el.getAttribute('data-id');
-      const isSelected = id === _selectedStation;
-      const isHighlighted = _highlightedStations.has(id);
+    _svgEl.querySelectorAll('[data-state-marker]').forEach(el => el.remove());
+    const ranks = Array.from(_highlightedStations);
+    const rankByGroup = new Map();
+    ranks.forEach((id, index) => {
+      const group = _groupByStationId.get(id);
+      if (group && !rankByGroup.has(group.key)) rankByGroup.set(group.key, index + 1);
+    });
+    _stationGroups.forEach(group => {
+      const isSelected = group.ids.includes(_selectedStation);
+      const isDraft = group.ids.includes(_draftStation) && _draftStation !== _selectedStation;
+      const rank = rankByGroup.get(group.key);
+      const label = _svgEl.querySelector('[data-station-label="' + group.key + '"]');
+      if (label) {
+        label.classList.toggle('is-origin', isSelected);
+        label.classList.toggle('is-draft', isDraft);
+        label.classList.toggle('is-recommendation', !!rank);
+      }
+      if (rank && !isSelected) {
+        _svgEl.appendChild(createSVGElement('circle', {
+          cx: group.x, cy: group.y, r: 10, fill: '#FFFFFF', stroke: '#172B32', 'stroke-width': 2,
+          'data-state-marker': 'recommendation', 'pointer-events': 'none',
+        }));
+        _svgEl.appendChild(createText(group.x, group.y, String(rank), {
+          'data-state-marker': 'recommendation', 'font-size': '10', 'font-weight': '700', fill: '#172B32',
+          'text-anchor': 'middle', 'dominant-baseline': 'central', 'pointer-events': 'none',
+        }));
+      }
       if (isSelected) {
-        el.setAttribute('fill', LINE_COLORS[(id.match(/^[A-Z]+/) || ['BL'])[0]] || '#333');
-        el.setAttribute('r', '10');
-      } else if (isHighlighted) {
-        el.setAttribute('fill', '#FFD700');
-        el.setAttribute('r', TRANSFER_STATIONS.has(id) ? '9' : '6');
-      } else {
-        el.setAttribute('fill', 'white');
-        el.setAttribute('r', TRANSFER_STATIONS.has(id) ? '8' : '5');
+        _svgEl.appendChild(createSVGElement('circle', {
+          cx: group.x, cy: group.y, r: 10, fill: '#172B32', stroke: '#FFFFFF', 'stroke-width': 2,
+          'data-state-marker': 'origin', 'pointer-events': 'none',
+        }));
+        appendStateTag(group, '出發', 'origin');
+      } else if (isDraft) {
+        _svgEl.appendChild(createSVGElement('circle', {
+          cx: group.x, cy: group.y, r: 11, fill: '#FFFFFF', stroke: '#172B32', 'stroke-width': 2,
+          'data-state-marker': 'draft', 'pointer-events': 'none',
+        }));
+        appendStateTag(group, '預選', 'draft');
       }
     });
+    // Keep station names above state overlays, matching the approved map's
+    // original marker-then-label paint order.
+    _svgEl.querySelectorAll('[data-station-label]').forEach(label => _svgEl.appendChild(label));
+  }
+
+  function appendStateTag(group, text, type) {
+    const id = group.ids.find(candidate => !SKIP_LABEL.has(candidate)) || group.ids[0];
+    const off = LABEL_OFFSETS[id] || { dx: 0, dy: -18 };
+    let x = group.x + 12;
+    let y = group.y - 27;
+    if (Math.abs(off.dx) > Math.abs(off.dy)) {
+      x = off.dx < 0 ? group.x + 12 : group.x - 42;
+      y = group.y - 8;
+    } else if (off.dy < 0) {
+      y = group.y + 11;
+    }
+    const tag = createSVGElement('g', { 'data-state-marker': type, 'class': 'mrt-state-tag mrt-state-tag-' + type, 'pointer-events': 'none' });
+    tag.appendChild(createSVGElement('rect', { x, y, width: 30, height: 16, rx: 3 }));
+    tag.appendChild(createText(x + 15, y + 8, text, {
+      'font-size': '9', 'font-weight': '700', 'text-anchor': 'middle', 'dominant-baseline': 'central',
+    }));
+    _svgEl.appendChild(tag);
   }
 
   function highlight(stationIds) {
@@ -701,8 +1023,20 @@ const MRTMap = (() => {
   function selectStation(id) {
     if (STATION_COORDS[id]) {
       _selectedStation = id;
+      if (_draftStation === id) _draftStation = null;
       updateHighlight();
     }
+  }
+
+  function setDraft(id) {
+    _draftStation = STATION_COORDS[id] ? id : null;
+    updateHighlight();
+  }
+
+  function clearDraft() {
+    _draftStation = null;
+    closeStationChoice({ restoreFocus: false });
+    updateHighlight();
   }
 
   // 與首頁舊版呼叫介面相容，避免 UI 成功渲染後再因方法名稱不一致拋錯。
@@ -738,5 +1072,12 @@ const MRTMap = (() => {
     selectStation,
     setSelected,
     clearSelected,
+    setDraft,
+    clearDraft,
+    zoomIn,
+    zoomOut,
+    resetView,
+    getViewState,
+    closeStationChoice,
   };
 })();

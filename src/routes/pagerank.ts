@@ -1,5 +1,5 @@
 /**
- * MRT Rank — PageRank API 路由
+ * MetroPulse — PageRank API 路由
  * 
  * 提供 PageRank 分數的查詢與視覺化資料
  */

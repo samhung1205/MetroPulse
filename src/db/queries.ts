@@ -1,5 +1,5 @@
 /**
- * MRT Rank — D1 資料庫查詢封裝
+ * MetroPulse — D1 資料庫查詢封裝
  * 
  * 將所有 SQL 查詢集中管理，提供型別安全的查詢介面。
  * 使用 Cloudflare D1 (SQLite) 作為後端資料庫。
@@ -13,6 +13,9 @@ import {
   TravelCost,
   TimePeriod,
   PreferenceCategory,
+  DataMonth,
+  RealPageRankRow,
+  RealOdFlowRow,
 } from '../lib/types';
 
 // ============================================================
@@ -226,6 +229,150 @@ export async function getTravelCost(
      WHERE from_station_id = ? AND to_station_id = ?`
   ).bind(fromId, toId).first<TravelCost>();
   return result;
+}
+
+// ============================================================
+// 真實旅運量資料查詢（real_od_flow / real_pagerank）
+// ============================================================
+
+/** 取得所有已匯入月份 */
+export async function getDataMonths(db: D1Database): Promise<DataMonth[]> {
+  const result = await db.prepare(
+    `SELECT * FROM data_months ORDER BY year DESC, month DESC`
+  ).all<DataMonth>();
+  return result.results ?? [];
+}
+
+/** 取得最新已匯入月份 */
+export async function getLatestDataMonth(db: D1Database): Promise<DataMonth | null> {
+  const result = await db.prepare(
+    `SELECT * FROM data_months ORDER BY year DESC, month DESC LIMIT 1`
+  ).first<DataMonth>();
+  return result ?? null;
+}
+
+/** 真實 PageRank 排名（含站點資訊） */
+export async function getRealPageRank(
+  db: D1Database,
+  year: number,
+  month: number,
+  period: string,
+  topN: number = 20
+): Promise<RealPageRankRow[]> {
+  const result = await db.prepare(
+    `SELECT r.station_id, r.period, r.year, r.month,
+            r.pr_value, r.pr_rank, r.normalized_score,
+            s.name_zh, s.line, s.line_color, s.is_transfer_station
+     FROM real_pagerank r
+     JOIN stations s ON r.station_id = s.id
+     WHERE r.year = ? AND r.month = ? AND r.period = ?
+     ORDER BY r.pr_rank ASC
+     LIMIT ?`
+  ).bind(year, month, period, topN).all<RealPageRankRow>();
+  return result.results ?? [];
+}
+
+/** 真實 PageRank 某站各時段值 */
+export async function getRealPageRankByStation(
+  db: D1Database,
+  stationId: string,
+  year: number,
+  month: number
+): Promise<{ period: string; pr_value: number; pr_rank: number | null }[]> {
+  const result = await db.prepare(
+    `SELECT period, pr_value, pr_rank
+     FROM real_pagerank
+     WHERE station_id = ? AND year = ? AND month = ?
+     ORDER BY period`
+  ).bind(stationId, year, month).all();
+  return (result.results ?? []) as any;
+}
+
+/** 真實 OD 流量（從某站出發，按流量排序） */
+export async function getRealOdFlow(
+  db: D1Database,
+  fromStationId: string,
+  year: number,
+  month: number,
+  period: string,
+  topN: number = 15
+): Promise<RealOdFlowRow[]> {
+  const result = await db.prepare(
+    `SELECT f.from_station_id, f.to_station_id, f.period, f.year, f.month, f.flow_count,
+            s.name_zh AS to_name_zh, s.line AS to_line, s.line_color AS to_line_color
+     FROM real_od_flow f
+     JOIN stations s ON f.to_station_id = s.id
+     WHERE f.from_station_id = ? AND f.year = ? AND f.month = ? AND f.period = ?
+     ORDER BY f.flow_count DESC
+     LIMIT ?`
+  ).bind(fromStationId, year, month, period, topN).all<RealOdFlowRow>();
+  return result.results ?? [];
+}
+
+/** 站點 PR 跨月趨勢 */
+export async function getStationPrTrends(
+  db: D1Database,
+  stationId: string,
+  period: string
+): Promise<{ year: number; month: number; pr_value: number; pr_rank: number | null }[]> {
+  const result = await db.prepare(
+    `SELECT year, month, pr_value, pr_rank
+     FROM real_pagerank
+     WHERE station_id = ? AND period = ?
+     ORDER BY year ASC, month ASC`
+  ).bind(stationId, period).all();
+  return (result.results ?? []) as any;
+}
+
+/**
+ * 取得推薦用的真實 PageRank（針對某月某時段）
+ * 回傳 Map<station_id, {pr_value, normalized_score}>
+ */
+export async function getRealPageRankMap(
+  db: D1Database,
+  year: number,
+  month: number,
+  period: string
+): Promise<Map<string, { pr_value: number; normalized_score: number }>> {
+  const result = await db.prepare(
+    `SELECT station_id, pr_value, normalized_score
+     FROM real_pagerank
+     WHERE year = ? AND month = ? AND period = ?`
+  ).bind(year, month, period).all<{ station_id: string; pr_value: number; normalized_score: number }>();
+
+  const map = new Map<string, { pr_value: number; normalized_score: number }>();
+  for (const row of result.results ?? []) {
+    map.set(row.station_id, { pr_value: row.pr_value, normalized_score: row.normalized_score ?? 0 });
+  }
+  return map;
+}
+
+/**
+ * 取得推薦用的真實 OD 轉移機率（從 real_od_flow 計算 p_ij）
+ */
+export async function getRealTransitionMap(
+  db: D1Database,
+  fromStationId: string,
+  year: number,
+  month: number,
+  period: string
+): Promise<Map<string, { flow_count: number; transition_prob: number }>> {
+  // 取所有出發站的流量
+  const result = await db.prepare(
+    `SELECT to_station_id, flow_count
+     FROM real_od_flow
+     WHERE from_station_id = ? AND year = ? AND month = ? AND period = ?`
+  ).bind(fromStationId, year, month, period).all<{ to_station_id: string; flow_count: number }>();
+
+  const rows = result.results ?? [];
+  const total = rows.reduce((s, r) => s + r.flow_count, 0);
+
+  const map = new Map<string, { flow_count: number; transition_prob: number }>();
+  for (const row of rows) {
+    const prob = total > 0 ? row.flow_count / total : 0;
+    map.set(row.to_station_id, { flow_count: row.flow_count, transition_prob: prob });
+  }
+  return map;
 }
 
 // ============================================================

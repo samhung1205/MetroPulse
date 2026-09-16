@@ -1,5 +1,5 @@
 /**
- * MRT Rank — 站點 API 路由
+ * MetroPulse — 站點 API 路由
  * 
  * 提供捷運站基本資料的查詢介面
  */

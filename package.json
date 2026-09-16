@@ -17,16 +17,22 @@
     "db:seed:remote": "wrangler d1 execute mrt-rank-db --remote --file=./seed.sql",
     "db:reset": "rm -rf .wrangler/state/v3/d1 && npm run db:migrate:local && npm run db:seed",
     "db:console": "wrangler d1 execute mrt-rank-db --local",
-    "stations:fallback": "node scripts/gen-stations-fallback.mjs"
+    "stations:fallback": "node scripts/gen-stations-fallback.mjs",
+    "etl:import": "python3 scripts/import_od_data.py",
+    "etl:import:local": "python3 scripts/import_od_data.py --apply-local",
+    "etl:import:remote": "python3 scripts/import_od_data.py --apply-remote",
+    "db:migrate:real:local": "wrangler d1 migrations apply mrt-rank-db --local",
+    "db:migrate:real:remote": "wrangler d1 migrations apply mrt-rank-db --remote"
   },
   "dependencies": {
-    "hono": "^4.12.9"
+    "hono": "^4.12.9",
+    "undici": "^8.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250705.0",
     "@hono/vite-build": "^1.2.0",
     "@hono/vite-dev-server": "^0.18.2",
     "vite": "^6.3.5",
-    "wrangler": "^4.81.1"
+    "wrangler": "^4.90.1"
   }
 }

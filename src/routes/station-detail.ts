@@ -1,5 +1,5 @@
 /**
- * MRT Rank — 站點詳情 API 路由
+ * MetroPulse — 站點詳情 API 路由
  * 
  * 提供站點詳細資訊，包含：
  * - 基本資料
@@ -77,10 +77,12 @@ stationDetail.get('/:id', async (c) => {
     }));
 
     // 整理偏好雷達資料
+    const preferenceCategories = ['attraction', 'food', 'shopping', 'nightlife', 'family'];
     const radarData = {
       labels: ['景點', '美食', '購物', '夜生活', '親子'],
-      categories: ['attraction', 'food', 'shopping', 'nightlife', 'family'],
-      scores: ['attraction', 'food', 'shopping', 'nightlife', 'family'].map(cat => {
+      categories: preferenceCategories,
+      availability: preferenceCategories.map(cat => tags.some(t => t.tag_category === cat)),
+      scores: preferenceCategories.map(cat => {
         const tag = tags.find(t => t.tag_category === cat);
         return tag ? tag.tag_score : 0;
       }),
@@ -111,6 +113,11 @@ stationDetail.get('/:id', async (c) => {
       connections: {
         outbound: transResult.results,
         inbound: inboundResult.results,
+      },
+      metadata: {
+        pagerank_source: 'pagerank_scores',
+        connection_source: 'transition_matrix',
+        data_month: null,
       },
     });
   } catch (error) {

@@ -1,5 +1,5 @@
 /**
- * MRT Rank — TypeScript 型別定義
+ * MetroPulse — TypeScript 型別定義
  * 定義所有資料模型與 API 介面
  */
 
@@ -120,7 +120,7 @@ export const LINE_COLORS: Record<string, string> = {
   G: '#1A803F',    // 松山新店線 — 綠色
   O: '#F5A623',    // 中和新蘆線 — 橘色
   BR: '#C48C31',   // 文湖線 — 棕色
-  Y: '#FFDB00',    // 環狀線 — 黃色
+  Y: '#EDDC00',    // 環狀線 — 黃色（與共用 route token 一致）
 };
 
 /** 路線名稱對照 */
@@ -215,3 +215,54 @@ export interface RecommendQuery {
 export interface Env {
   mrt_rank_db: D1Database;
 }
+
+// ============================================================
+// 真實旅運量資料型別
+// ============================================================
+
+/** 已匯入月份記錄 */
+export interface DataMonth {
+  year: number;
+  month: number;
+  label: string;
+  row_count: number;
+  imported_at: string;
+}
+
+/** 真實 PageRank 查詢結果列 */
+export interface RealPageRankRow {
+  station_id: string;
+  period: string;
+  year: number;
+  month: number;
+  pr_value: number;
+  pr_rank: number | null;
+  normalized_score: number | null;
+  name_zh: string;
+  line: string;
+  line_color: string | null;
+  is_transfer_station: number;
+}
+
+/** 真實 OD 流量查詢結果列 */
+export interface RealOdFlowRow {
+  from_station_id: string;
+  to_station_id: string;
+  period: string;
+  year: number;
+  month: number;
+  flow_count: number;
+  to_name_zh: string;
+  to_line: string;
+  to_line_color: string | null;
+}
+
+/** 時段元資料 */
+export const PERIODS_META: Record<string, { label: string; short: string }> = {
+  morning_peak: { label: '晨峰 07:00-09:00', short: '晨峰' },
+  morning:      { label: '上午 09:00-12:00', short: '上午' },
+  noon:         { label: '午間 12:00-14:00', short: '午間' },
+  afternoon:    { label: '下午 14:00-17:00', short: '下午' },
+  evening_peak: { label: '晚峰 17:00-19:00', short: '晚峰' },
+  night:        { label: '夜間 19:00-23:00', short: '夜間' },
+};
