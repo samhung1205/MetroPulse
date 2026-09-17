@@ -423,6 +423,7 @@ function renderHomePage(): string {
       applyQueryFromUrl();
       await Promise.all([loadStations(), loadDataMonths(), loadDataYears()]);
       updateRangeFieldVisibility();
+      applyRangeContextFromUrl();
       // Do not overwrite a station the user started entering while the list loaded.
       const fromId = new URLSearchParams(window.location.search).get('from');
       const restoreResults = new URLSearchParams(window.location.search).get('restore') === 'recommendations';
@@ -568,6 +569,43 @@ function renderHomePage(): string {
       if (preference) {
         preference.checked = true;
         queryState.draftQuery.preference = preference.value;
+      }
+    }
+
+    // 從「返回本次推薦」deep link 還原 range_mode/年度/月份，讓 Detail 頁返回首頁時本次查詢的
+    // temporal context 不會遺失（不還原就會悄悄退回月模式的預設查詢，結果與離開前不同）。
+    // 必須在 loadDataMonths()/loadDataYears() 之後執行，才能對照實際可用的月份／年度做驗證，
+    // 無效或不存在的年度不會被接受——不虛構選項，維持既有的誠實 fallback 風格。
+    function applyRangeContextFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('range_type') === 'year') {
+        const yearParam = params.get('year');
+        const match = availableDataYears.find(y => String(y.year) === yearParam);
+        if (match) {
+          queryState.draftQuery.rangeMode = 'year';
+          queryState.draftQuery.yearValue = String(match.year);
+          const radio = document.querySelector('input[name="range_mode"][value="year"]');
+          if (radio) radio.checked = true;
+          byId('range-month-panel').hidden = true;
+          byId('range-year-panel').hidden = false;
+          byId('sel-data-year').value = queryState.draftQuery.yearValue;
+        }
+        return;
+      }
+      const yearParam = params.get('year');
+      const monthParam = params.get('month');
+      if (yearParam && monthParam) {
+        const monthValue = yearParam + '-' + String(monthParam).padStart(2, '0');
+        const match = availableDataMonths.find(m => (m.year + '-' + String(m.month).padStart(2, '0')) === monthValue);
+        if (match) {
+          queryState.draftQuery.rangeMode = 'month';
+          queryState.draftQuery.monthValue = monthValue;
+          const radio = document.querySelector('input[name="range_mode"][value="month"]');
+          if (radio) radio.checked = true;
+          byId('range-month-panel').hidden = false;
+          byId('range-year-panel').hidden = true;
+          byId('sel-data-month').value = monthValue;
+        }
       }
     }
 
@@ -1118,6 +1156,15 @@ function renderHomePage(): string {
         time_period: snapshot.time_period,
         preference: snapshot.preference
       });
+      // 把本次推薦用的資料範圍一起帶進 Detail 的 deep link，讓「回本次推薦」與 Detail 頁的
+      // 年度／月度證據能維持同一個 temporal context，而不是每次都悄悄退回月模式。
+      if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
+        params.set('range_type', 'year');
+        params.set('year', String(snapshot.requested_year));
+      } else if (snapshot.requested_year != null && snapshot.requested_month != null) {
+        params.set('year', String(snapshot.requested_year));
+        params.set('month', String(snapshot.requested_month));
+      }
       return '/station/' + encodeURIComponent(stationId) + '?' + params.toString();
     }
 
@@ -1255,7 +1302,20 @@ function renderStationDetailPage(stationId: string): string {
       const timePeriod = params.get('time_period');
       const preference = params.get('preference');
       if (params.get('context') !== 'recommendation' || !/^[A-Z]+\\d{1,2}[A-Z]?$/.test(from || '') || !VALID_PERIODS.has(timePeriod) || !VALID_PREFERENCES.has(preference)) return null;
-      return Object.freeze({ from, timePeriod, preference });
+      // range context 是選填的：解析失敗就當作沒有帶（等同既有 month-mode 預設行為），不擋整個 context。
+      const rangeTypeParam = params.get('range_type');
+      const yearParam = params.get('year');
+      const monthParam = params.get('month');
+      let rangeType = null, year = null, month = null;
+      if (rangeTypeParam === 'year' && /^\\d{4}$/.test(yearParam || '')) {
+        rangeType = 'year';
+        year = Number(yearParam);
+      } else if (/^\\d{4}$/.test(yearParam || '') && /^(0?[1-9]|1[0-2])$/.test(monthParam || '')) {
+        rangeType = 'month';
+        year = Number(yearParam);
+        month = Number(monthParam);
+      }
+      return Object.freeze({ from, timePeriod, preference, rangeType, year, month });
     }
 
     function homeQueryUrl(from, restore) {
@@ -1263,6 +1323,13 @@ function renderStationDetailPage(stationId: string): string {
       if (recommendationContext) {
         params.set('time_period', recommendationContext.timePeriod);
         params.set('preference', recommendationContext.preference);
+        if (recommendationContext.rangeType === 'year') {
+          params.set('range_type', 'year');
+          params.set('year', String(recommendationContext.year));
+        } else if (recommendationContext.rangeType === 'month') {
+          params.set('year', String(recommendationContext.year));
+          params.set('month', String(recommendationContext.month));
+        }
         if (restore) params.set('restore', 'recommendations');
       }
       return '/?' + params.toString() + (restore ? '#results-section' : '');
@@ -1300,9 +1367,20 @@ function renderStationDetailPage(stationId: string): string {
       document.getElementById('detail-error').hidden = true;
       document.getElementById('detail-content').classList.add('hidden');
       try {
-        const detailPromise = fetchJson('/api/station-detail/' + encodeURIComponent(STATION_ID));
+        const detailParams = new URLSearchParams();
+        if (recommendationContext && recommendationContext.rangeType === 'year') {
+          detailParams.set('range_type', 'year');
+          detailParams.set('year', String(recommendationContext.year));
+        }
+        const detailQuery = detailParams.toString();
+        const detailPromise = fetchJson('/api/station-detail/' + encodeURIComponent(STATION_ID) + (detailQuery ? '?' + detailQuery : ''));
         const recommendationPromise = recommendationContext
-          ? fetchJson('/api/recommend?' + new URLSearchParams({ from: recommendationContext.from, time_period: recommendationContext.timePeriod, preference: recommendationContext.preference, top_n:'5' }).toString()).catch(() => null)
+          ? fetchJson('/api/recommend?' + (() => {
+              const p = new URLSearchParams({ from: recommendationContext.from, time_period: recommendationContext.timePeriod, preference: recommendationContext.preference, top_n:'5' });
+              if (recommendationContext.rangeType === 'year') { p.set('range_type', 'year'); p.set('year', String(recommendationContext.year)); }
+              else if (recommendationContext.rangeType === 'month') { p.set('year', String(recommendationContext.year)); p.set('month', String(recommendationContext.month)); }
+              return p.toString();
+            })()).catch(() => null)
           : Promise.resolve(null);
         const [data, recommendationData] = await Promise.all([detailPromise, recommendationPromise]);
         if (loadId !== detailLoadId) return;
@@ -1343,16 +1421,28 @@ function renderStationDetailPage(stationId: string): string {
         ? preference.categories.indexOf(recommendationContext.preference) : -1;
       const relationReason = preferenceReason(recommendation);
       const connectivity = recommendation?.score_breakdown?.connectivity?.normalized;
+      // 推薦摘要句子的資料範圍描述，月／年通用：優先用 API 確認後的 range_label／range.year，
+      // 不用送出時的草稿選擇冒充，和首頁 renderMetadata() 的邏輯一致。
+      const recSourceLabel = recommendationMetadata?.range_type === 'year' && recommendationMetadata.range?.year
+        ? recommendationMetadata.range.year + ' 全年度'
+        : (recommendationMetadata?.range_label || recommendationMetadata?.data_month || '月份未知的');
       const relationHtml = recommendationContext
         ? '<section class="mp-detail-section" aria-labelledby="relation-heading"><h2 id="relation-heading">與本次推薦的關係</h2>' +
           '<dl class="mp-context-summary"><div><dt>出發站</dt><dd>' + escapeHtml(recommendationQuery?.from_station?.name || recommendationContext.from) + (recommendationQuery?.from_station?.name ? ' <span>' + escapeHtml(recommendationContext.from) + '</span>' : '') + '</dd></div><div><dt>時段</dt><dd>' + escapeHtml(PERIOD_LABELS[recommendationContext.timePeriod]) + '</dd></div><div><dt>偏好</dt><dd>' + escapeHtml(PREFERENCE_LABELS[recommendationContext.preference]) + '</dd></div></dl>' +
           (relationReason ? '<p class="mp-detail-key-reason">' + escapeHtml(relationReason) + '</p>' : '<p>目前無法從這次查詢重建具體偏好理由；不以其他數值補寫推測。</p>') +
           (typeof connectivity === 'number' && Number.isFinite(connectivity) && connectivity >= .5 ? '<p>與出發站的人流連結在本次候選中較高。這是候選間的相對值，不是旅客前往機率。</p>' : '') +
-          '<p class="mp-data-limit">站數、轉乘與旅行時間沒有可靠的結構化欄位，因此不在此推算。' + (recommendationMetadata?.data_source === 'real' ? '本次推薦摘要使用' + escapeHtml(recommendationMetadata.data_month || '月份未知的') + '旅運資料，但不代表詳情頁每一欄都有相同來源。' : '') + '</p></section>'
+          '<p class="mp-data-limit">站數、轉乘與旅行時間沒有可靠的結構化欄位，因此不在此推算。' + (recommendationMetadata?.data_source === 'real' ? '本次推薦摘要使用' + escapeHtml(recSourceLabel) + '旅運資料，但不代表詳情頁每一欄都有相同來源。' : '') + '</p></section>'
         : '';
       const bestPeriod = pagerank.best_period
         ? '<p><strong>PageRank 最高時段：</strong>' + escapeHtml(pagerank.best_period.time_period_label) + '，該時段排名 #' + escapeHtml(pagerank.best_period.pr_rank ?? '未知') + '。這表示該時段的路網相對重要性，不是即時擁擠度或最佳遊玩時間。</p>'
         : '<p>目前沒有可用的 PageRank 時段資料。</p>';
+      // 資料範圍：克制的一行文字，不做成獨立卡片。只有 Detail API 實際用了年度證據才顯示確認後的
+      // range；若使用者是從年度推薦進來但這一站年度證據不可用，誠實顯示原因，不假裝有年度資料。
+      const temporalRangeNote = metadata?.range && metadata.range_type === 'year'
+        ? '<p class="mp-data-limit">資料範圍：' + escapeHtml(metadata.range.year) + ' 全年度</p>'
+        : (recommendationContext?.rangeType === 'year' && metadata?.range_error
+          ? '<p class="mp-data-limit">' + escapeHtml(metadata.range_error) + '，以下改用既有預設資料。</p>'
+          : '');
 
       document.getElementById('detail-content').innerHTML = \`
         <header class="mp-detail-identity">
@@ -1365,6 +1455,7 @@ function renderStationDetailPage(stationId: string): string {
             <div><dt>行政區</dt><dd>\${escapeHtml(station.district || '資料不足')}</dd></div>
             <div><dt>轉乘</dt><dd>\${station.is_transfer_station ? (station.transfer_lines ? '既有資料標示為轉乘站' : '轉乘站；可用路線代碼資料未完整提供') : '非轉乘站'}</dd></div>
           </dl>
+          \${temporalRangeNote}
         </header>
         \${relationHtml}
         <section class="mp-detail-section" aria-labelledby="features-heading">
@@ -1392,13 +1483,13 @@ function renderStationDetailPage(stationId: string): string {
           </article>
           <article class="mp-evidence-block" aria-labelledby="flow-heading">
             <h3 id="flow-heading">主要人流連結</h3>
-            <p>連結值來自既有 transition_matrix；月份未由此 API 提供。「本站出發」優先顯示下午資料（若無則顯示第一個可用時段）；「流入本站」則讓每個來源站取跨時段最大值，兩者不是同一範圍。百分比是既有矩陣連結值乘以 100 的顯示方式，未提供觀測來源證明，不能當成實際旅客比例。</p>
+            <p>\${metadata?.range_type === 'year' ? '連結值來自 ' + escapeHtml(metadata.range.year) + ' 全年度 range_od_flow（同一年度聚合流量換算的相對占比）' : '連結值來自既有 transition_matrix；月份未由此 API 提供'}。「本站出發」優先顯示下午資料（若無則顯示第一個可用時段）；「流入本站」則讓每個來源站取跨時段最大值，兩者不是同一範圍。百分比是既有矩陣連結值乘以 100 的顯示方式，未提供觀測來源證明，不能當成實際旅客比例。</p>
             <div class="mp-flow-columns">
               <section aria-labelledby="outbound-heading"><h4 id="outbound-heading">本站 → 目的地</h4><div id="outbound-list" class="mp-flow-list"></div></section>
               <section aria-labelledby="inbound-heading"><h4 id="inbound-heading">來源站 → 本站</h4><div id="inbound-list" class="mp-flow-list"></div></section>
             </div>
           </article>
-          <p class="mp-data-limit">詳情頁目前使用 \${escapeHtml(metadata?.pagerank_source || '既有 PageRank 資料')} 與 \${escapeHtml(metadata?.connection_source || '既有連結資料')}；月份 provenance 未提供，不能視為首頁 real metadata 的逐欄證明。</p>
+          <p class="mp-data-limit">詳情頁目前使用 \${escapeHtml(metadata?.pagerank_source || '既有 PageRank 資料')} 與 \${escapeHtml(metadata?.connection_source || '既有連結資料')}\${metadata?.range_type === 'year' ? '（' + escapeHtml(metadata.range.year) + ' 全年度）' : '；月份 provenance 未提供，不能視為首頁 real metadata 的逐欄證明'}。</p>
         </section>
       \`;
 

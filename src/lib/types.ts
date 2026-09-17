@@ -244,6 +244,7 @@ export interface DateRange {
   expected_day_count: number | null;
   is_complete: number; // SQLite 布林以 0/1 儲存
   computed_at: string | null;
+  coverage_note: string | null; // is_complete=0 時說明缺失原因（缺天數／缺哪天的哪個 period）；完整時為 null
 }
 
 /** 真實 PageRank 查詢結果列 */

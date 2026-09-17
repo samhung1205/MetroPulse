@@ -21,17 +21,47 @@ import {
   getStationById,
   getStationTags,
   getPageRankByStation,
+  getDateRange,
+  resolveRangeStationId,
+  getRangePageRankByStation,
+  getRangeOdFlowFrom,
+  getRangeOdFlowTo,
 } from '../db/queries';
 import { jsonDbError } from '../lib/d1-response';
 
 const stationDetail = new Hono<{ Bindings: Env }>();
 
+/** 把 range_od_flow 的原始 flow_count 列，依「同一站同一時段」的總量換算成 transition_prob，
+ *  做法與 getRangeTransitionMap()（推薦用）一致，只是這裡要跨全部時段一次算完，供 Detail 頁使用。
+ *  不對缺值補 0——沒有 flow_count 的 (to,period) 組合本來就不會出現在列裡。 */
+function withTransitionProb<T extends { period: string; flow_count: number }>(
+  rows: T[]
+): (T & { time_period: string; transition_prob: number })[] {
+  const totalsByPeriod = new Map<string, number>();
+  for (const r of rows) totalsByPeriod.set(r.period, (totalsByPeriod.get(r.period) ?? 0) + r.flow_count);
+  return rows
+    .map(r => ({
+      ...r,
+      time_period: r.period,
+      transition_prob: (totalsByPeriod.get(r.period) ?? 0) > 0 ? r.flow_count / totalsByPeriod.get(r.period)! : 0,
+    }))
+    .sort((a, b) => b.transition_prob - a.transition_prob);
+}
+
 /**
- * GET /api/station-detail/:id
- * 取得站點完整詳情（用於站點詳情頁）
+ * GET /api/station-detail/:id?range_type=year&year=YYYY
+ *
+ * 取得站點完整詳情（用於站點詳情頁）。
+ * 不帶 range 參數時行為與既有版本完全一致（合成軌道 pagerank_scores/transition_matrix）。
+ * 帶 range_type=year&year= 且該年度已是完整年度時，PageRank 與連結證據改用同一個年度 range
+ * 的 range_pagerank/range_od_flow（直接讀取，不重新計算），並在 metadata.range 回傳確認後的
+ * range 資訊；年度不存在／不完整／解析不到對應站點時，不讓整頁失敗，只是不附加年度證據，並在
+ * metadata.range_error 誠實說明原因，讓前端可以選擇顯示或忽略。
  */
 stationDetail.get('/:id', async (c) => {
   const id = c.req.param('id');
+  const rangeTypeParam = c.req.query('range_type');
+  const yearStr = c.req.query('year');
 
   try {
     // 並行查詢
@@ -67,14 +97,69 @@ stationDetail.get('/:id', async (c) => {
       LIMIT 20
     `).bind(id).all();
 
-    // 整理 PageRank 時序資料
-    const prTimeSeries = prScores.map(p => ({
+    // 整理 PageRank 時序資料（預設：合成軌道）
+    let prTimeSeries = prScores.map(p => ({
       time_period: p.time_period,
       time_period_label: TIME_PERIOD_LABELS[p.time_period as TimePeriod] || p.time_period,
       pr_value: p.pr_value,
       pr_rank: p.pr_rank,
       normalized_score: p.normalized_score,
     }));
+    let outboundRows: any[] = transResult.results ?? [];
+    let inboundRows: any[] = inboundResult.results ?? [];
+
+    // Phase 3A.1：年度 temporal context——只有在 range 完整、且能解析出這一站的 canonical
+    // station_id 時才覆蓋成年度證據；其餘情況一律維持合成軌道（獨立進入 Detail 的既有預設行為）。
+    let rangeMeta: { range_id: string; range_type: 'year'; year: number; label: string | null; start_date: string; end_date: string; day_count: number | null } | null = null;
+    let rangeError: string | null = null;
+
+    if (rangeTypeParam === 'year') {
+      const year = parseInt(yearStr ?? '', 10);
+      if (!yearStr || !Number.isInteger(year)) {
+        rangeError = 'range_type=year 需要有效的 year 參數';
+      } else {
+        const rangeId = `year:${year}`;
+        const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
+        if (!dateRange) {
+          rangeError = `找不到 ${year} 年的旅運資料`;
+        } else if (!dateRange.is_complete) {
+          rangeError = `${year} 年的旅運資料不完整，暫時無法提供年度證據`;
+        } else {
+          const canonicalId = await resolveRangeStationId(c.env.mrt_rank_db, id, rangeId);
+          if (!canonicalId) {
+            rangeError = '此站目前沒有對應的年度旅運資料';
+          } else {
+            const [rangePr, outboundRaw, inboundRaw] = await Promise.all([
+              getRangePageRankByStation(c.env.mrt_rank_db, rangeId, canonicalId),
+              getRangeOdFlowFrom(c.env.mrt_rank_db, rangeId, canonicalId),
+              getRangeOdFlowTo(c.env.mrt_rank_db, rangeId, canonicalId),
+            ]);
+            if (rangePr.length > 0) {
+              prTimeSeries = rangePr.map(p => ({
+                time_period: p.period,
+                time_period_label: TIME_PERIOD_LABELS[p.period as TimePeriod] || p.period,
+                pr_value: p.pr_value,
+                pr_rank: p.pr_rank,
+                normalized_score: p.normalized_score,
+              }));
+              outboundRows = withTransitionProb(outboundRaw).slice(0, 30);
+              inboundRows = withTransitionProb(inboundRaw).slice(0, 20);
+              rangeMeta = {
+                range_id: rangeId,
+                range_type: 'year',
+                year,
+                label: dateRange.label,
+                start_date: dateRange.start_date,
+                end_date: dateRange.end_date,
+                day_count: dateRange.day_count,
+              };
+            } else {
+              rangeError = '此站目前沒有對應的年度 PageRank 資料';
+            }
+          }
+        }
+      }
+    }
 
     // 整理偏好雷達資料
     const preferenceCategories = ['attraction', 'food', 'shopping', 'nightlife', 'family'];
@@ -111,13 +196,16 @@ stationDetail.get('/:id', async (c) => {
       },
       preference: radarData,
       connections: {
-        outbound: transResult.results,
-        inbound: inboundResult.results,
+        outbound: outboundRows,
+        inbound: inboundRows,
       },
       metadata: {
-        pagerank_source: 'pagerank_scores',
-        connection_source: 'transition_matrix',
+        pagerank_source: rangeMeta ? 'range_pagerank' : 'pagerank_scores',
+        connection_source: rangeMeta ? 'range_od_flow' : 'transition_matrix',
         data_month: null,
+        range_type: rangeMeta ? rangeMeta.range_type : null,
+        range: rangeMeta,
+        range_error: rangeError,
       },
     });
   } catch (error) {

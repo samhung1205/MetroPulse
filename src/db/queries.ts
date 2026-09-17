@@ -501,6 +501,83 @@ export async function getRangeTransitionMap(
   return map;
 }
 
+/**
+ * 把任意 `stations.id` 解析成它在某個 range 實際使用的 canonical station_id。
+ *
+ * 轉乘站在 `stations` 表對每條線各有一列（如 BL12／R10 都是台北車站，同一 name_zh、不同 id），
+ * 但 ETL 只用「主線代表站」的 id 算 daily_od_flow/range_pagerank（見
+ * scripts/import_od_data.py 的 STATION_MAP／get_all_station_ids）。若直接拿非代表 id 去查
+ * range_pagerank/range_od_flow 會查到 0 筆，不是真的沒有資料。
+ * 用 name_zh 找同名列裡「真的在這個 range_pagerank 出現過」的那個 id；找不到回傳 null
+ * （理論上不會發生在真實站名，這裡只是防禦性處理，不假裝一定能解析成功）。
+ */
+export async function resolveRangeStationId(
+  db: D1Database,
+  stationId: string,
+  rangeId: string
+): Promise<string | null> {
+  const direct = await db.prepare(
+    `SELECT 1 FROM range_pagerank WHERE range_id = ? AND station_id = ? LIMIT 1`
+  ).bind(rangeId, stationId).first();
+  if (direct) return stationId;
+
+  const result = await db.prepare(
+    `SELECT r.station_id
+     FROM stations s1
+     JOIN stations s2 ON s2.name_zh = s1.name_zh
+     JOIN range_pagerank r ON r.station_id = s2.id AND r.range_id = ?
+     WHERE s1.id = ?
+     LIMIT 1`
+  ).bind(rangeId, stationId).first<{ station_id: string }>();
+  return result?.station_id ?? null;
+}
+
+/** Range PageRank 某站各時段值（月／年通用；Station Detail 年度證據用） */
+export async function getRangePageRankByStation(
+  db: D1Database,
+  rangeId: string,
+  stationId: string
+): Promise<{ period: string; pr_value: number; pr_rank: number | null; normalized_score: number | null }[]> {
+  const result = await db.prepare(
+    `SELECT period, pr_value, pr_rank, normalized_score
+     FROM range_pagerank
+     WHERE range_id = ? AND station_id = ?
+     ORDER BY period`
+  ).bind(rangeId, stationId).all();
+  return (result.results ?? []) as any;
+}
+
+/** Range OD 流量（某站出發，含所有時段；Station Detail 年度連結證據用）。不做 topN 截斷——
+ *  一站最多連到約 117 個 canonical 站 × 6 時段，量小，交給呼叫端依 transition_prob 排序後再截斷。 */
+export async function getRangeOdFlowFrom(
+  db: D1Database,
+  rangeId: string,
+  fromStationId: string
+): Promise<{ to_station_id: string; period: string; flow_count: number; name_zh: string; line: string; line_color: string }[]> {
+  const result = await db.prepare(
+    `SELECT f.to_station_id, f.period, f.flow_count, s.name_zh, s.line, s.line_color
+     FROM range_od_flow f
+     JOIN stations s ON f.to_station_id = s.id
+     WHERE f.range_id = ? AND f.from_station_id = ?`
+  ).bind(rangeId, fromStationId).all();
+  return (result.results ?? []) as any;
+}
+
+/** Range OD 流量（流向某站，含所有時段；Station Detail 年度連結證據用） */
+export async function getRangeOdFlowTo(
+  db: D1Database,
+  rangeId: string,
+  toStationId: string
+): Promise<{ from_station_id: string; period: string; flow_count: number; name_zh: string; line: string; line_color: string }[]> {
+  const result = await db.prepare(
+    `SELECT f.from_station_id, f.period, f.flow_count, s.name_zh, s.line, s.line_color
+     FROM range_od_flow f
+     JOIN stations s ON f.from_station_id = s.id
+     WHERE f.range_id = ? AND f.to_station_id = ?`
+  ).bind(rangeId, toStationId).all();
+  return (result.results ?? []) as any;
+}
+
 // ============================================================
 // 推薦系統專用的複合查詢
 // ============================================================

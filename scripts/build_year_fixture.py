@@ -14,6 +14,10 @@ Phase 2A 匯入）當模板，用 SQL INSERT...SELECT 依日期重新映射＋�
 用法：
   python3 scripts/build_year_fixture.py --year 2027 --local
   python3 scripts/build_year_fixture.py --year 2027 --local --incomplete-months 3   # 只填 9 個月，測試 incomplete 分支
+  python3 scripts/build_year_fixture.py --year 2027 --local --corrupt-period 03-15:evening_peak
+      # 反例 fixture：365/366 天都有資料（distinct service_date 數完整），
+      # 但其中一天刻意刪掉一個 period——用來驗證 Phase 3A.1 收緊後的完整性判定
+      # 「同時看 service_date × period」不會被舊版「只看 distinct 天數」的判定誤判為完整。
 """
 
 import argparse
@@ -43,7 +47,24 @@ def main():
         '--incomplete-months', type=int, default=0,
         help='只填入前 (12-N) 個月，刻意留 N 個月空缺，用來測試 incomplete-year 分支（預設 0＝完整年度）'
     )
+    parser.add_argument(
+        '--corrupt-period', type=str, default='',
+        help='格式 MM-DD:period，建完整年度後再刪掉該日該 period 的所有列，用來測試「天數完整但缺 period」反例'
+    )
     args = parser.parse_args()
+
+    corrupt_date = corrupt_period = None
+    if args.corrupt_period:
+        try:
+            date_part, corrupt_period = args.corrupt_period.split(':', 1)
+            corrupt_date = date_part
+            if corrupt_period not in {
+                'morning_peak', 'morning', 'noon', 'afternoon', 'evening_peak', 'night'
+            }:
+                raise ValueError
+        except ValueError:
+            print('錯誤：--corrupt-period 格式必須是 MM-DD:period，例如 03-15:evening_peak', file=sys.stderr)
+            sys.exit(1)
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     wrangler_bin = _wrangler_bin(project_root)
@@ -75,6 +96,14 @@ def main():
             f"AND CAST(flow_count * {multiplier} AS INTEGER) > 0;"
         )
 
+    if corrupt_date and corrupt_period:
+        target_date = f"{year}-{corrupt_date}"
+        lines.append(f"-- 反例注入：刪除 {target_date} 的 {corrupt_period}（其餘 period 與天數維持完整）")
+        lines.append(
+            f"DELETE FROM daily_od_flow WHERE service_date = '{target_date}' AND period = '{corrupt_period}';"
+        )
+        print(f"  [反例] 將刪除 {target_date} 的 {corrupt_period}（distinct 天數不受影響，只少一個 period）")
+
     output_path = os.path.join(project_root, 'scripts', 'output', f"year_fixture_{year}.sql")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -86,6 +115,8 @@ def main():
         project_root, '合成年度 fixture',
     )
     print(f"\n完成。{months_to_fill}/12 個月已寫入 daily_od_flow（{year} 年）。")
+    if corrupt_date and corrupt_period:
+        print(f"     已刻意刪除 {year}-{corrupt_date} 的 {corrupt_period}，用於驗證 service_date × period 完整性判定。")
 
 
 if __name__ == '__main__':

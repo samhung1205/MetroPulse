@@ -213,6 +213,7 @@ recommend.get('/', async (c) => {
             expected_day_count: dateRange.expected_day_count,
             start_date: dateRange.start_date,
             end_date: dateRange.end_date,
+            note: dateRange.coverage_note,
           },
         }, 404);
       }

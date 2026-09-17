@@ -15,9 +15,14 @@ range，不是從既有月度資料平均或衍生而來（decision：禁止 ave
   3. year range 有被正確持久化：date_ranges 的 is_complete/day_count/expected_day_count/
      start_date/end_date/computed_at 都正確。
 
+Phase 3A.1 新增 `--expect-incomplete`：驗證「反例」fixture（365/366 天都有資料，但其中一天缺一個
+period）確實被新版完整性判定擋下——只檢查 date_ranges.is_complete=0 與 coverage_note 是否存在，
+不跑第 1、2 節的 OD/PageRank 檢查（is_complete=0 時 range_od_flow/range_pagerank 本來就不會有資料）。
+
 用法：
   python3 scripts/verify_year_parity.py --year 2027 --local
   python3 scripts/verify_year_parity.py --year 2027 --remote --db-name mrt-rank-db
+  python3 scripts/verify_year_parity.py --year 2027 --local --expect-incomplete
 """
 
 import argparse
@@ -57,6 +62,8 @@ def main():
     parser = argparse.ArgumentParser(description='驗證年度 range 聚合與 PageRank 的正確性')
     parser.add_argument('--year', type=int, required=True)
     parser.add_argument('--db-name', dest='db_name', type=str, default='mrt-rank-db')
+    parser.add_argument('--expect-incomplete', action='store_true',
+                         help='反例模式：只驗證這個年度被正確判定為不完整（is_complete=0 且有 coverage_note），不跑 OD/PageRank 檢查')
     scope = parser.add_mutually_exclusive_group(required=True)
     scope.add_argument('--local', action='store_true')
     scope.add_argument('--remote', action='store_true')
@@ -88,6 +95,27 @@ def main():
         check("date_ranges 存在", False, "找不到這個 range_id，後續檢查無法進行")
         sys.exit(1)
     dr = dr_rows[0]
+
+    if args.expect_incomplete:
+        # 反例模式：這個 fixture 應該「天數完整、但缺 period」——驗證 is_complete 沒有被舊版
+        # 「只看 distinct 天數」的邏輯誤判為 1，且 coverage_note 有具體說明缺失原因。
+        check("date_ranges.is_complete = 0（反例應被判定為不完整）", dr['is_complete'] == 0, f"實際值：{dr['is_complete']}")
+        check("date_ranges.coverage_note 有值（說明缺失原因）", bool(dr.get('coverage_note')), dr.get('coverage_note') or '(空)')
+        od_count = d1_query(f"SELECT COUNT(*) as c FROM range_od_flow WHERE range_id='{range_id}'", project_root, remote, args.db_name)[0]['c']
+        pr_count = d1_query(f"SELECT COUNT(*) as c FROM range_pagerank WHERE range_id='{range_id}'", project_root, remote, args.db_name)[0]['c']
+        check("不完整年度沒有寫入 range_od_flow", od_count == 0, f"實際筆數：{od_count}")
+        check("不完整年度沒有寫入 range_pagerank", pr_count == 0, f"實際筆數：{pr_count}")
+        print(f"\n{'='*70}")
+        all_ok = len(report['failures']) == 0
+        print(f"  結論：{'PASS — 反例確實被判定為不完整，且沒有污染 range_* 表' if all_ok else 'FAIL — 見上方標記為 FAIL 的項目'}")
+        print(f"{'='*70}\n")
+        report_path = os.path.join(project_root, 'scripts', 'output', f"year_parity_report_{args.year}_incomplete_{'remote' if remote else 'local'}.json")
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        print(f"報告已寫入：{report_path}")
+        sys.exit(0 if all_ok else 1)
+
     check("date_ranges.is_complete = 1", dr['is_complete'] == 1, f"實際值：{dr['is_complete']}")
     check("date_ranges.day_count == expected_day_count", dr['day_count'] == dr['expected_day_count'],
           f"day_count={dr['day_count']} expected_day_count={dr['expected_day_count']}")

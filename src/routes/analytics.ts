@@ -109,7 +109,7 @@ analytics.get('/pagerank', async (c) => {
         return c.json({
           success: false,
           error: `${year} 年的旅運資料不完整，目前無法提供年度排名`,
-          coverage: { actual_day_count: dateRange.day_count, expected_day_count: dateRange.expected_day_count },
+          coverage: { actual_day_count: dateRange.day_count, expected_day_count: dateRange.expected_day_count, note: dateRange.coverage_note },
         }, 404);
       }
       const rankings = await getRangePageRank(c.env.mrt_rank_db, rangeId, period, topN);
