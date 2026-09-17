@@ -34,6 +34,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code local session/config directory
+.claude/
+
 # Backup
 *.backup
 *.bak
