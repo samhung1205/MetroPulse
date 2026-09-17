@@ -232,6 +232,24 @@ function renderHomePage(): string {
         </select>
       </div>
 
+      <fieldset class="mp-query-field" id="range-field" hidden>
+        <legend><span class="mp-inline-icon-label">${iconUse('calendar')}<span>資料範圍</span></span></legend>
+        <div id="range-mode-options" class="mp-query-preferences mp-range-mode-options">
+          <label class="mp-query-chip"><input type="radio" name="range_mode" value="month" checked><span class="mp-query-chip-content">月份</span></label>
+          <label class="mp-query-chip"><input type="radio" name="range_mode" value="year"><span class="mp-query-chip-content">年度</span></label>
+        </div>
+        <div id="range-month-panel">
+          <select id="sel-data-month" class="mp-query-control" aria-label="選擇資料月份"></select>
+          <p class="mp-query-help">預設使用最新已匯入月份；可改選其他月份查看該月推薦。</p>
+        </div>
+        <div id="range-year-panel" hidden>
+          <select id="sel-data-year" class="mp-query-control" aria-label="選擇資料年度"></select>
+          <p id="range-year-help" class="mp-query-help">年度推薦需要完整 365（閏年 366）天的逐日資料才會計算，可能少於已匯入的月份數。</p>
+          <p id="range-year-unavailable" class="mp-query-help" role="status" hidden>目前沒有完整年度資料可用，請改用月份查詢。</p>
+        </div>
+        <p id="range-mode-error" class="mp-query-error" role="alert" hidden></p>
+      </fieldset>
+
       <fieldset class="mp-query-field">
         <legend><span class="mp-inline-icon-label">${iconUse('compass')}<span>偏好</span></span></legend>
         <div id="preference-options" class="mp-query-preferences">
@@ -373,9 +391,11 @@ function renderHomePage(): string {
     let stationsLoading = false;
     let scoreChart = null;
     let breakdownChart = null;
+    let availableDataMonths = [];
+    let availableDataYears = [];
     const queryState = {
       draftInput: '', committedOrigin: null,
-      draftQuery: { timePeriod: 'afternoon', preference: 'all' },
+      draftQuery: { timePeriod: 'afternoon', preference: 'all', monthValue: '', rangeMode: 'month', yearValue: '' },
       submittedQuery: null, currentRequest: null, requestSequence: 0, phase: 'idle'
     };
     let suggestions = [];
@@ -401,7 +421,8 @@ function renderHomePage(): string {
       updateOffset();
       if (nav && typeof ResizeObserver !== 'undefined') new ResizeObserver(updateOffset).observe(nav);
       applyQueryFromUrl();
-      await loadStations();
+      await Promise.all([loadStations(), loadDataMonths(), loadDataYears()]);
+      updateRangeFieldVisibility();
       // Do not overwrite a station the user started entering while the list loaded.
       const fromId = new URLSearchParams(window.location.search).get('from');
       const restoreResults = new URLSearchParams(window.location.search).get('restore') === 'recommendations';
@@ -479,6 +500,62 @@ function renderHomePage(): string {
       if (document.activeElement === byId('station-search')) showStationDropdown();
     }
 
+    async function loadDataMonths() {
+      try {
+        const data = await fetchStationList('/api/analytics/months');
+        availableDataMonths = data.success && Array.isArray(data.months) ? data.months : [];
+      } catch (_) {
+        availableDataMonths = [];
+      }
+      const select = byId('sel-data-month');
+      select.replaceChildren();
+      if (!availableDataMonths.length) return;
+      // 由新到舊排序時，第一筆即為最新月份；latest 選項預設對應「未指定」的既有行為。
+      const latestOption = document.createElement('option');
+      latestOption.value = '';
+      latestOption.textContent = '最新月份（自動）';
+      select.appendChild(latestOption);
+      availableDataMonths.forEach(month => {
+        const option = document.createElement('option');
+        option.value = month.year + '-' + String(month.month).padStart(2, '0');
+        option.textContent = month.label || (month.year + '年' + month.month + '月');
+        select.appendChild(option);
+      });
+      select.value = queryState.draftQuery.monthValue || '';
+    }
+
+    async function loadDataYears() {
+      try {
+        const data = await fetchStationList('/api/analytics/years');
+        availableDataYears = data.success && Array.isArray(data.years) ? data.years : [];
+      } catch (_) {
+        availableDataYears = [];
+      }
+      const select = byId('sel-data-year');
+      select.replaceChildren();
+      availableDataYears.forEach(y => {
+        const option = document.createElement('option');
+        option.value = String(y.year);
+        option.textContent = y.label || (y.year + '年（全年）');
+        select.appendChild(option);
+      });
+      const hasYears = availableDataYears.length > 0;
+      // 年度沒有「最新自動」這個既有行為要延續，直接預設最新一個完整年度。
+      if (hasYears && !queryState.draftQuery.yearValue) {
+        queryState.draftQuery.yearValue = String(availableDataYears[0].year);
+      }
+      select.value = queryState.draftQuery.yearValue || '';
+      select.hidden = !hasYears;
+      byId('range-year-unavailable').hidden = hasYears;
+    }
+
+    // 「資料範圍」欄位整體只在有任何真實月份資料時出現——沒有真實資料就完全沿用既有 synthetic/fallback 行為，
+    // 不虛構月份或年度選項；年度分頁即使沒有完整年度資料，仍保持可見並顯示誠實的 unavailable 狀態，
+    // 不影響月份推薦。
+    function updateRangeFieldVisibility() {
+      byId('range-field').hidden = !availableDataMonths.length;
+    }
+
     function applyQueryFromUrl() {
       // Preserve station-detail deep links as an explicit preselection.
       const params = new URLSearchParams(window.location.search);
@@ -545,6 +622,23 @@ function renderHomePage(): string {
       byId('clear-station').addEventListener('click', clearStation);
       byId('time-period-options').addEventListener('change', event => {
         queryState.draftQuery.timePeriod = event.target.value;
+        queryChanged();
+      });
+      byId('sel-data-month').addEventListener('change', event => {
+        queryState.draftQuery.monthValue = event.target.value;
+        queryChanged();
+      });
+      byId('sel-data-year').addEventListener('change', event => {
+        queryState.draftQuery.yearValue = event.target.value;
+        queryChanged();
+      });
+      byId('range-mode-options').addEventListener('change', event => {
+        if (!event.target.matches('input[name="range_mode"]')) return;
+        queryState.draftQuery.rangeMode = event.target.value;
+        byId('range-month-panel').hidden = event.target.value !== 'month';
+        byId('range-year-panel').hidden = event.target.value !== 'year';
+        clearOriginError();
+        byId('range-mode-error').hidden = true;
         queryChanged();
       });
       byId('preference-options').addEventListener('change', event => {
@@ -847,7 +941,10 @@ function renderHomePage(): string {
       return !!snapshot && !!queryState.committedOrigin
         && snapshot.from_station.id === queryState.committedOrigin.id
         && snapshot.time_period === queryState.draftQuery.timePeriod
-        && snapshot.preference === queryState.draftQuery.preference;
+        && snapshot.preference === queryState.draftQuery.preference
+        && snapshot.range_mode === queryState.draftQuery.rangeMode
+        && snapshot.month_value === (queryState.draftQuery.monthValue || '')
+        && snapshot.year_value === (queryState.draftQuery.yearValue || '');
     }
 
     function queryChanged() {
@@ -892,17 +989,34 @@ function renderHomePage(): string {
         showOriginError('請輸入站名，並從建議清單或路線圖選取出發站。');
         return;
       }
+      const rangeMode = queryState.draftQuery.rangeMode;
+      if (rangeMode === 'year' && !queryState.draftQuery.yearValue) {
+        byId('range-mode-error').textContent = '目前沒有完整年度資料可用，請改選月份查詢。';
+        byId('range-mode-error').hidden = false;
+        focusAndReveal(byId('sel-data-year'));
+        return;
+      }
       if (queryState.currentRequest && matchesDraft(queryState.currentRequest.snapshot)) return;
       closeSuggestions();
       clearOriginError();
+      byId('range-mode-error').hidden = true;
       const timeControl = byId('time-period-options');
       const checkedPreference = document.querySelector('input[name="preference"]:checked');
+      const monthValue = queryState.draftQuery.monthValue || '';
+      const yearValue = queryState.draftQuery.yearValue || '';
+      const [reqYear, reqMonth] = rangeMode === 'month' && monthValue ? monthValue.split('-').map(Number) : [null, null];
+      const requestedYearForYearMode = rangeMode === 'year' && yearValue ? Number(yearValue) : null;
       const snapshot = Object.freeze({
         from_station: Object.freeze({ id: queryState.committedOrigin.id, name: queryState.committedOrigin.name_zh }),
         time_period: queryState.draftQuery.timePeriod,
         time_period_label: timeControl.selectedOptions[0].textContent,
         preference: queryState.draftQuery.preference,
         preference_label: checkedPreference.nextElementSibling.textContent,
+        range_mode: rangeMode,
+        month_value: monthValue,
+        year_value: yearValue,
+        requested_year: rangeMode === 'year' ? requestedYearForYearMode : reqYear,
+        requested_month: rangeMode === 'month' ? reqMonth : null,
         top_n: 5
       });
       const request = { id: ++queryState.requestSequence, snapshot, controller: new AbortController(), timeout: null, timedOut: false };
@@ -918,9 +1032,17 @@ function renderHomePage(): string {
       const isCurrent = () => queryState.currentRequest === request && matchesDraft(snapshot);
       try {
         const params = new URLSearchParams({ from: snapshot.from_station.id, time_period: snapshot.time_period, preference: snapshot.preference, top_n: String(snapshot.top_n) });
+        if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
+          params.set('range_type', 'year');
+          params.set('year', String(snapshot.requested_year));
+        } else if (snapshot.requested_year != null && snapshot.requested_month != null) {
+          params.set('year', String(snapshot.requested_year));
+          params.set('month', String(snapshot.requested_month));
+        }
         const response = await fetch('/api/recommend?' + params, { signal: request.controller.signal });
         const data = await response.json();
         if (!isCurrent()) return;
+        if (response.status === 404 && data && data.error) throw new Error(data.error, { cause: 'not-found' });
         if (!response.ok || !data.success || !Array.isArray(data.recommendations)) throw new Error('Recommendation unavailable');
         renderResults(data, snapshot);
         queryState.phase = data.recommendations.length ? 'success' : 'empty';
@@ -933,9 +1055,11 @@ function renderHomePage(): string {
         queryState.phase = 'error';
         byId('query-status').textContent = '';
         byId('query-error').hidden = false;
-        byId('query-error-message').textContent = request.timedOut
-          ? '查詢等候時間較長，條件已保留，請重試。'
-          : '暫時無法取得推薦，條件已保留。請確認連線後重試。';
+        byId('query-error-message').textContent = error && error.cause === 'not-found'
+          ? error.message + (snapshot.range_mode === 'year' ? '，請改選其他年度。' : '，請改選其他月份。')
+          : request.timedOut
+            ? '查詢等候時間較長，條件已保留，請重試。'
+            : '暫時無法取得推薦，條件已保留。請確認連線後重試。';
       } finally {
         clearTimeout(request.timeout);
         if (queryState.currentRequest === request) {
@@ -999,9 +1123,16 @@ function renderHomePage(): string {
 
     function renderResults(data, snapshot) {
       const recs = data.recommendations;
+      const meta = data.metadata || {};
+      // 資料範圍一律取自 API 回應的確認後 metadata（range_type/range_label），不使用送出時的
+      // 草稿選擇——避免條件變更後（例如月份/年度互換）舊結果被誤認為屬於新的範圍。
+      const actualRangeLabel = typeof meta.range_label === 'string' && meta.range_label.trim() ? meta.range_label.trim() : null;
+      const rangeText = meta.data_source === 'real'
+        ? (actualRangeLabel || '資料範圍未知')
+        : meta.data_source === 'synthetic' ? '合成示範資料（無日期範圍）' : '未知';
       byId('results-section').classList.remove('hidden');
       byId('results-heading').textContent = recs.length ? '本次推薦結果' : '目前沒有推薦結果';
-      byId('query-summary').innerHTML = '<dl class="mp-query-summary"><div><dt>出發站</dt><dd>' + escapeHtml(snapshot.from_station.name) + ' <span>' + escapeHtml(snapshot.from_station.id) + '</span></dd></div><div><dt>時段</dt><dd>' + escapeHtml(snapshot.time_period_label) + '</dd></div><div><dt>偏好</dt><dd>' + escapeHtml(snapshot.preference_label) + '</dd></div></dl>';
+      byId('query-summary').innerHTML = '<dl class="mp-query-summary"><div><dt>出發站</dt><dd>' + escapeHtml(snapshot.from_station.name) + ' <span>' + escapeHtml(snapshot.from_station.id) + '</span></dd></div><div><dt>時段</dt><dd>' + escapeHtml(snapshot.time_period_label) + '</dd></div><div><dt>偏好</dt><dd>' + escapeHtml(snapshot.preference_label) + '</dd></div><div><dt>資料範圍</dt><dd>' + escapeHtml(rangeText) + '</dd></div></dl>';
       if (!recs.length) {
         byId('recommendations-list').innerHTML = '<li class="mp-query-empty">${iconUse('search-x')}<span>這組條件目前沒有推薦站點。請修改時段、偏好或出發站後再查詢。</span></li>';
         return;
@@ -1051,11 +1182,13 @@ function renderHomePage(): string {
     }
 
     function renderMetadata(meta) {
-      const month = typeof meta.data_month === 'string' && meta.data_month.trim() ? meta.data_month.trim() : null;
-      let source = '資料來源未知；月份未知。';
-      if (meta.data_source === 'real') source = month ? '依 ' + month + ' 旅運資料' : '使用旅運資料；月份未知。';
+      const rangeSentence = meta.range_type === 'year' && meta.range && meta.range.year
+        ? '依 ' + meta.range.year + ' 全年度旅運資料'
+        : (typeof meta.range_label === 'string' && meta.range_label.trim() ? '依 ' + meta.range_label.trim() + ' 旅運資料' : null);
+      let source = '資料來源未知；資料範圍未知。';
+      if (meta.data_source === 'real') source = rangeSentence || '使用旅運資料；資料範圍未知。';
       else if (meta.data_source === 'synthetic') source = '使用合成示範資料；不代表實際旅運觀測。';
-      else if (month) source = '資料來源未知；API 標示月份：' + month + '。';
+      else if (rangeSentence) source = '資料來源未知；API 標示範圍：' + rangeSentence.replace(/^依 /, '') + '。';
       const count = typeof meta.total_stations_evaluated === 'number' && Number.isFinite(meta.total_stations_evaluated) ? String(meta.total_stations_evaluated) : '未知';
       byId('metadata-section').innerHTML = '<div class="mp-data-note"><p>' + escapeHtml(source) + '</p><p>部分偏好與交通資訊來自既有標籤或估計資料。</p></div><p class="mp-score-note">候選資料：' + escapeHtml(count) + ' 筆站碼。分數用於本次排序，不是適合你的機率。<a href="#about">了解推薦方法</a></p>';
     }
@@ -1489,8 +1622,14 @@ ${htmlNav('analytics', 'light')}
     <h2 id="analysis-controls-heading">分析範圍</h2>
     <div class="mp-control-grid">
     <div>
-      <label for="sel-month">月份</label>
+      <label for="sel-range-mode">資料範圍</label>
+      <select id="sel-range-mode" class="mp-control mp-range-mode-select">
+        <option value="month">月份</option>
+        <option value="year">年度</option>
+      </select>
       <select id="sel-month" class="mp-control"></select>
+      <select id="sel-year" class="mp-control" hidden></select>
+      <p id="sel-year-unavailable" class="mp-control-help" hidden>目前沒有完整年度資料可用，請改用月份。</p>
     </div>
     <div>
       <label for="sel-period">時段</label>
@@ -1602,6 +1741,7 @@ let barChart = null;
 let trendChart = null;
 let currentData = [];
 let availableMonths = [];
+let availableYears = [];
 let stations = [];
 let rankingRequest = null;
 let trendRequest = null;
@@ -1682,17 +1822,21 @@ async function init() {
   const request = new AbortController();
   initRequest = request;
   const selectedMonth = document.getElementById('sel-month').value;
+  const selectedYear = document.getElementById('sel-year').value;
+  const selectedRangeMode = document.getElementById('sel-range-mode').value;
   document.getElementById('retry-init').disabled = true;
   document.getElementById('no-data-banner').hidden = true;
   clearRanking('正在取得可用月份…');
   clearTrend('選擇站點後查看月份資料。');
   try {
-    const [monthData, stationData] = await Promise.all([
+    const [monthData, yearData, stationData] = await Promise.all([
       fetchJson('/api/analytics/months', request.signal),
+      fetchJson('/api/analytics/years', request.signal).catch(() => ({ years: [] })),
       fetchJson('/api/stations', request.signal).catch(() => ({ stations: [] }))
     ]);
     if (initRequest !== request) return;
     availableMonths = Array.isArray(monthData.months) ? monthData.months : [];
+    availableYears = Array.isArray(yearData.years) ? yearData.years : [];
     stations = Array.isArray(stationData.stations) ? stationData.stations : [];
     const monthSelect = document.getElementById('sel-month');
     monthSelect.replaceChildren();
@@ -1703,6 +1847,23 @@ async function init() {
       monthSelect.appendChild(option);
     });
     if (Array.from(monthSelect.options).some(option => option.value === selectedMonth)) monthSelect.value = selectedMonth;
+
+    const yearSelect = document.getElementById('sel-year');
+    yearSelect.replaceChildren();
+    availableYears.forEach(y => {
+      const option = document.createElement('option');
+      option.value = String(y.year);
+      option.textContent = y.label || (y.year + '年（全年）');
+      yearSelect.appendChild(option);
+    });
+    const hasYears = availableYears.length > 0;
+    if (hasYears && Array.from(yearSelect.options).some(option => option.value === selectedYear)) yearSelect.value = selectedYear;
+    document.getElementById('sel-year-unavailable').hidden = hasYears;
+    yearSelect.hidden = !hasYears || document.getElementById('sel-range-mode').value !== 'year';
+    // 沒有完整年度資料時，範圍模式維持在月份，不讓使用者卡在一個必然失敗的年度查詢。
+    if (!hasYears && selectedRangeMode === 'year') document.getElementById('sel-range-mode').value = 'month';
+    applyRangeModeVisibility();
+
     document.getElementById('trend-stations').innerHTML = stations.map(station => '<option value="' + escapeHtml(station.id) + '" label="' + escapeHtml(station.name_zh) + '"></option>').join('');
     if (!availableMonths.length) {
       document.getElementById('month-state-title').textContent = '目前沒有可用的月份資料。';
@@ -1724,6 +1885,14 @@ async function init() {
   }
 }
 
+function applyRangeModeVisibility() {
+  const mode = document.getElementById('sel-range-mode').value;
+  const hasYears = availableYears.length > 0;
+  document.getElementById('sel-month').hidden = mode !== 'month';
+  document.getElementById('sel-year').hidden = mode !== 'year' || !hasYears;
+  document.getElementById('sel-year-unavailable').hidden = mode !== 'year' || hasYears;
+}
+
 // ── Tab 切換 ─────────────────────────────────────────
 function switchTab(name, btn) {
   ['ranking','chart','trend'].forEach(t => {
@@ -1741,8 +1910,12 @@ function switchTab(name, btn) {
 }
 
 function configureAnalyticsEvents() {
-  ['sel-month', 'sel-period', 'sel-topn'].forEach(id => {
+  ['sel-month', 'sel-year', 'sel-period', 'sel-topn'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => clearRanking('條件已變更，請按「更新分析」查看資料。'));
+  });
+  document.getElementById('sel-range-mode').addEventListener('change', () => {
+    applyRangeModeVisibility();
+    clearRanking('條件已變更，請按「更新分析」查看資料。');
   });
   document.getElementById('trend-station').addEventListener('input', () => clearTrend('站點已變更，請重新查看月份資料。'));
   document.getElementById('trend-period').addEventListener('change', () => clearTrend('時段已變更，請重新查看月份資料。'));
@@ -1767,26 +1940,39 @@ function configureAnalyticsEvents() {
 
 // ── 載入排名 ─────────────────────────────────────────
 async function loadRanking() {
-  const selVal = document.getElementById('sel-month').value;
-  if (!selVal) return;
-  const [y, m] = selVal.split('-');
+  const rangeMode = document.getElementById('sel-range-mode').value;
   const period = document.getElementById('sel-period').value;
   const topN = document.getElementById('sel-topn').value;
-  const scope = y + '年' + Number(m) + '月 · ' + (ANALYTICS_PERIODS[period] || period) + ' · Top ' + topN;
+
+  let apiParams, scope, scopeLabel;
+  if (rangeMode === 'year') {
+    const yearVal = document.getElementById('sel-year').value;
+    if (!yearVal) return;
+    scopeLabel = yearVal + '年（全年）';
+    apiParams = new URLSearchParams({ range_type: 'year', year: yearVal, period, top_n: topN });
+  } else {
+    const selVal = document.getElementById('sel-month').value;
+    if (!selVal) return;
+    const [y, m] = selVal.split('-');
+    scopeLabel = y + '年' + Number(m) + '月';
+    apiParams = new URLSearchParams({ year: y, month: m, period, top_n: topN });
+  }
+  scope = scopeLabel + ' · ' + (ANALYTICS_PERIODS[period] || period) + ' · Top ' + topN;
   clearRanking('正在載入 ' + scope + '…');
   const request = new AbortController();
   rankingRequest = request;
   document.getElementById('btn-load').disabled = true;
   try {
-    const json = await fetchJson('/api/analytics/pagerank?' + new URLSearchParams({ year:y, month:m, period, top_n:topN }).toString(), request.signal);
+    const json = await fetchJson('/api/analytics/pagerank?' + apiParams.toString(), request.signal);
     if (rankingRequest !== request) return;
     currentData = Array.isArray(json.rankings) ? json.rankings : [];
-    const monthLabel = y + '年' + Number(m) + '月';
-    const scope = monthLabel + ' · ' + (ANALYTICS_PERIODS[period] || period) + ' · Top ' + topN;
+    // 範圍描述一律用送出時已確認可用的值組出（API 成功回應才會走到這裡），
+    // 與 rangeMode 一致，不會顯示與實際查詢不同的範圍。
     document.getElementById('rank-subtitle').textContent = scope;
-    document.getElementById('current-data-summary').textContent = '真實月度資料 · ' + scope + '。PageRank 表示指定範圍內的路網相對重要性。';
+    const sourceLabel = rangeMode === 'year' ? '真實年度資料' : '真實月度資料';
+    document.getElementById('current-data-summary').textContent = sourceLabel + ' · ' + scope + '。PageRank 表示指定範圍內的路網相對重要性。';
     if (!currentData.length) {
-      document.getElementById('rank-loading').textContent = '這組月份與時段目前沒有排名資料。請保留條件並改選其他範圍。';
+      document.getElementById('rank-loading').textContent = '這組範圍與時段目前沒有排名資料。請保留條件並改選其他範圍。';
       document.getElementById('bar-takeaway').textContent = '目前沒有可比較的站點資料。';
       return;
     }
@@ -1794,7 +1980,7 @@ async function loadRanking() {
     if (!document.getElementById('tab-chart').hidden) renderBarChart(currentData);
   } catch (error) {
     if (rankingRequest !== request) return;
-    const message = scope + ' 載入失敗；條件已保留，請按「更新分析」重試。';
+    const message = (error && error.message ? error.message : scope + ' 載入失敗') + '；條件已保留，請按「更新分析」重試。';
     document.getElementById('rank-loading').textContent = message;
     document.getElementById('current-data-summary').textContent = message;
     document.getElementById('bar-takeaway').textContent = message;
@@ -1893,15 +2079,18 @@ async function loadTrend() {
       document.getElementById('trend-msg').textContent = '這個站點與時段目前沒有月份資料。請改選站點或時段。';
       return;
     }
+    // calendar 是連續月曆序列（缺月 pr_value:null）；trends 是實際有資料的月份，僅用於判斷筆數與提示文字。
+    const calendar = Array.isArray(json.calendar) && json.calendar.length ? json.calendar : trends.map(item => ({ ...item, has_data: true }));
+    const missingCount = calendar.filter(item => !item.has_data).length;
     const stationName = exactStation?.name_zh ? exactStation.name_zh + ' ' + sid : sid;
     const hasTrend = trends.length > 1;
     document.getElementById('trend-heading').textContent = hasTrend ? '跨月份 PageRank 趨勢' : '月份資料';
     document.querySelector('#tab-btn-trend .mp-tab-label').textContent = hasTrend ? '跨月趨勢' : '月份資料';
     document.getElementById('trend-msg').textContent = hasTrend
-      ? stationName + ' · ' + ANALYTICS_PERIODS[period] + ' · 共 ' + trends.length + ' 個月份，可比較變化。'
+      ? stationName + ' · ' + ANALYTICS_PERIODS[period] + ' · 共 ' + trends.length + ' 個月份，可比較變化。' + (missingCount ? '期間另有 ' + missingCount + ' 個月份缺資料，圖表與表格會明確標示，不插值、不補 0。' : '')
       : stationName + ' · ' + ANALYTICS_PERIODS[period] + ' · 目前僅一個月份，尚不足判讀趨勢。';
     document.getElementById('trend-caption').textContent = stationName + ' · ' + ANALYTICS_PERIODS[period] + ' PageRank 月份資料';
-    document.getElementById('trend-rows').innerHTML = trends.map(item => '<tr><th scope="row">' + item.year + '年' + item.month + '月</th><td>' + (typeof item.pr_value === 'number' ? item.pr_value.toFixed(7) : '資料不足') + '</td><td>' + (item.pr_rank == null ? '資料不足' : '#' + escapeHtml(item.pr_rank)) + '</td></tr>').join('');
+    document.getElementById('trend-rows').innerHTML = calendar.map(item => '<tr' + (item.has_data ? '' : ' class="mp-trend-missing"') + '><th scope="row">' + item.year + '年' + item.month + '月</th><td>' + (item.has_data && typeof item.pr_value === 'number' ? item.pr_value.toFixed(7) : '資料缺失') + '</td><td>' + (item.has_data && item.pr_rank != null ? '#' + escapeHtml(item.pr_rank) : '資料缺失') + '</td></tr>').join('');
     document.getElementById('trend-table-wrap').hidden = false;
     if (hasTrend && typeof Chart !== 'undefined') {
       const colors = chartTokens();
@@ -1909,10 +2098,10 @@ async function loadTrend() {
       trendChart = new Chart(document.getElementById('trend-chart'), {
         type: 'line',
         data: {
-          labels: trends.map(item => item.year + '年' + item.month + '月'),
+          labels: calendar.map(item => item.year + '年' + item.month + '月'),
           datasets: [{
             label: stationName + ' PageRank',
-            data: trends.map(item => Number.isFinite(item.pr_value) ? +(item.pr_value * 100).toFixed(5) : null),
+            data: calendar.map(item => item.has_data && Number.isFinite(item.pr_value) ? +(item.pr_value * 100).toFixed(5) : null),
             borderColor: colors.ink,
             backgroundColor: colors.surface,
             pointBackgroundColor: colors.surface,
@@ -1920,7 +2109,8 @@ async function loadTrend() {
             pointBorderWidth: 2,
             pointRadius: 4,
             tension: 0,
-            fill: false
+            fill: false,
+            spanGaps: false
           }]
         },
         options: {

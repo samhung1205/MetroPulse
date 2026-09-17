@@ -198,6 +198,7 @@ input { caret-color: var(--mp-accent); }
 .mp-data-table thead th { background: var(--mp-bg-elevated); color: var(--mp-text-muted); font-size: var(--mp-type-small); }
 .mp-data-table tbody th { font-weight: 600; }
 .mp-data-table td { font-variant-numeric: tabular-nums; }
+.mp-trend-missing td, .mp-trend-missing th { color: var(--mp-text-muted); font-style: italic; }
 .mp-flow-columns { display: grid; gap: var(--mp-space-8); margin-top: var(--mp-space-6); }
 .mp-flow-list { margin-top: .75rem; border-top: 1px solid var(--mp-border); }
 .mp-flow-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; min-height: 56px; padding-block: .5rem; border-bottom: 1px solid var(--mp-border); }
@@ -238,6 +239,7 @@ input { caret-color: var(--mp-accent); }
 .mp-trend-chart { height: 320px; }
 .mp-trend-controls { display: grid; gap: 1rem; align-items: end; margin-top: var(--mp-space-6); }
 .mp-control-help { margin-top: var(--mp-space-2); color: var(--mp-text-muted); font-size: var(--mp-type-small); line-height: 1.5; }
+.mp-range-mode-select { margin-bottom: 8px; }
 .mp-analytics-definition { padding-top: var(--mp-space-8); border-top: 1px solid var(--mp-border); }
 .mp-analytics-definition dl { max-width: 52rem; margin-top: var(--mp-space-4); }
 .mp-analytics-definition dl > div { display: grid; gap: .25rem; padding-block: .75rem; border-top: 1px solid var(--mp-border); }
@@ -310,6 +312,8 @@ input { caret-color: var(--mp-accent); }
 .mp-home .mp-query-suggestions [role="option"]:hover { background: var(--mp-bg-elevated); }
 .mp-home .mp-query-suggestions [aria-selected="true"] { background: var(--mp-accent-soft); outline: 2px solid var(--mp-accent); outline-offset: -2px; font-weight: 700; }
 .mp-home .mp-query-preferences { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.mp-home .mp-range-mode-options { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 17.5rem; margin-bottom: 12px; }
+.mp-home #range-month-panel, .mp-home #range-year-panel { margin-top: 4px; }
 .mp-home .mp-query-chip { min-width: 0; min-height: 48px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 4px; border: 1px solid var(--mp-border-strong); border-radius: var(--mp-radius-md); font-size: 16px; line-height: 1.5; cursor: pointer; }
 .mp-home .mp-query-chip input { appearance: auto; flex: 0 0 16px; width: 16px; height: 16px; margin: 0; accent-color: var(--mp-accent); }
 .mp-home .mp-query-chip-content { display: inline-flex; min-width: 0; align-items: center; justify-content: center; gap: .375rem; }

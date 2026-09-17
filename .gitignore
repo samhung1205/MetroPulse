@@ -7,6 +7,11 @@ dist/
 # Wrangler local state
 .wrangler/
 
+# Generated ETL output (large SQL dumps + import manifests; regenerate via scripts/import_od_data.py)
+scripts/output/
+__pycache__/
+*.pyc
+
 # Environment variables
 .env
 .dev.vars

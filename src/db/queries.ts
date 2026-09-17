@@ -16,6 +16,8 @@ import {
   DataMonth,
   RealPageRankRow,
   RealOdFlowRow,
+  DateRange,
+  RangePageRankRow,
 } from '../lib/types';
 
 // ============================================================
@@ -251,6 +253,14 @@ export async function getLatestDataMonth(db: D1Database): Promise<DataMonth | nu
   return result ?? null;
 }
 
+/** 取得指定年月是否已匯入；不存在回傳 null */
+export async function getDataMonth(db: D1Database, year: number, month: number): Promise<DataMonth | null> {
+  const result = await db.prepare(
+    `SELECT * FROM data_months WHERE year = ? AND month = ?`
+  ).bind(year, month).first<DataMonth>();
+  return result ?? null;
+}
+
 /** 真實 PageRank 排名（含站點資訊） */
 export async function getRealPageRank(
   db: D1Database,
@@ -325,6 +335,31 @@ export async function getStationPrTrends(
 }
 
 /**
+ * 把跨月趨勢資料補成連續月曆序列，缺資料的月份以 null 值標示。
+ * 不插值、不補 0——缺月就是缺月。
+ */
+export function buildContinuousMonthCalendar(
+  trends: { year: number; month: number; pr_value: number; pr_rank: number | null }[]
+): { year: number; month: number; pr_value: number | null; pr_rank: number | null; has_data: boolean }[] {
+  if (trends.length === 0) return [];
+  const byKey = new Map(trends.map(t => [`${t.year}-${t.month}`, t]));
+  const first = trends[0];
+  const last = trends[trends.length - 1];
+  const calendar: { year: number; month: number; pr_value: number | null; pr_rank: number | null; has_data: boolean }[] = [];
+  let y = first.year;
+  let m = first.month;
+  while (y < last.year || (y === last.year && m <= last.month)) {
+    const existing = byKey.get(`${y}-${m}`);
+    calendar.push(existing
+      ? { year: y, month: m, pr_value: existing.pr_value, pr_rank: existing.pr_rank, has_data: true }
+      : { year: y, month: m, pr_value: null, pr_rank: null, has_data: false });
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return calendar;
+}
+
+/**
  * 取得推薦用的真實 PageRank（針對某月某時段）
  * 回傳 Map<station_id, {pr_value, normalized_score}>
  */
@@ -363,6 +398,97 @@ export async function getRealTransitionMap(
      FROM real_od_flow
      WHERE from_station_id = ? AND year = ? AND month = ? AND period = ?`
   ).bind(fromStationId, year, month, period).all<{ to_station_id: string; flow_count: number }>();
+
+  const rows = result.results ?? [];
+  const total = rows.reduce((s, r) => s + r.flow_count, 0);
+
+  const map = new Map<string, { flow_count: number; transition_prob: number }>();
+  for (const row of rows) {
+    const prob = total > 0 ? row.flow_count / total : 0;
+    map.set(row.to_station_id, { flow_count: row.flow_count, transition_prob: prob });
+  }
+  return map;
+}
+
+// ============================================================
+// Generalized range 查詢（Phase 3A：month/year 共用同一組表）
+// ============================================================
+
+/** 取得單一 range 的狀態記錄；不存在回傳 null。is_complete 需另外檢查，不保證有 range_* 資料 */
+export async function getDateRange(db: D1Database, rangeId: string): Promise<DateRange | null> {
+  const result = await db.prepare(
+    `SELECT * FROM date_ranges WHERE range_id = ?`
+  ).bind(rangeId).first<DateRange>();
+  return result ?? null;
+}
+
+/**
+ * 取得所有「完整」年度 range（is_complete=1），依年份新到舊排序。
+ * 只回傳完整年度——不完整的年度即使在 date_ranges 有狀態列，也不會出現在這裡，
+ * 因為它們沒有對應的 range_pagerank 可用，不該被當成使用者可選的選項。
+ */
+export async function getCompleteYearRanges(db: D1Database): Promise<DateRange[]> {
+  const result = await db.prepare(
+    `SELECT * FROM date_ranges WHERE range_type = 'year' AND is_complete = 1 ORDER BY range_id DESC`
+  ).all<DateRange>();
+  return result.results ?? [];
+}
+
+/** Range PageRank 排名（含站點資訊；月／年通用，analytics 排名表用） */
+export async function getRangePageRank(
+  db: D1Database,
+  rangeId: string,
+  period: string,
+  topN: number = 20
+): Promise<RangePageRankRow[]> {
+  const result = await db.prepare(
+    `SELECT r.station_id, r.period, r.range_id,
+            r.pr_value, r.pr_rank, r.normalized_score,
+            s.name_zh, s.line, s.line_color, s.is_transfer_station
+     FROM range_pagerank r
+     JOIN stations s ON r.station_id = s.id
+     WHERE r.range_id = ? AND r.period = ?
+     ORDER BY r.pr_rank ASC
+     LIMIT ?`
+  ).bind(rangeId, period, topN).all<RangePageRankRow>();
+  return result.results ?? [];
+}
+
+/**
+ * 取得推薦用的 range PageRank（月／年通用，針對某個 range_id 某時段）
+ * 回傳 Map<station_id, {pr_value, normalized_score}>，形狀與 getRealPageRankMap 相同，
+ * 讓 computeRecommendations() 完全不需要知道資料來自 real_pagerank 還是 range_pagerank。
+ */
+export async function getRangePageRankMap(
+  db: D1Database,
+  rangeId: string,
+  period: string
+): Promise<Map<string, { pr_value: number; normalized_score: number }>> {
+  const result = await db.prepare(
+    `SELECT station_id, pr_value, normalized_score
+     FROM range_pagerank
+     WHERE range_id = ? AND period = ?`
+  ).bind(rangeId, period).all<{ station_id: string; pr_value: number; normalized_score: number }>();
+
+  const map = new Map<string, { pr_value: number; normalized_score: number }>();
+  for (const row of result.results ?? []) {
+    map.set(row.station_id, { pr_value: row.pr_value, normalized_score: row.normalized_score ?? 0 });
+  }
+  return map;
+}
+
+/** 取得推薦用的 range 轉移機率（月／年通用，從 range_od_flow 計算 p_ij） */
+export async function getRangeTransitionMap(
+  db: D1Database,
+  fromStationId: string,
+  rangeId: string,
+  period: string
+): Promise<Map<string, { flow_count: number; transition_prob: number }>> {
+  const result = await db.prepare(
+    `SELECT to_station_id, flow_count
+     FROM range_od_flow
+     WHERE from_station_id = ? AND range_id = ? AND period = ?`
+  ).bind(fromStationId, rangeId, period).all<{ to_station_id: string; flow_count: number }>();
 
   const rows = result.results ?? [];
   const total = rows.reduce((s, r) => s + r.flow_count, 0);

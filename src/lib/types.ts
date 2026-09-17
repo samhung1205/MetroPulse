@@ -229,12 +229,43 @@ export interface DataMonth {
   imported_at: string;
 }
 
+/**
+ * 通用時間範圍記錄（Phase 3A：目前只有 range_type='month'｜'year' 會被寫入且對外可用）。
+ * is_complete=0 的列只代表「目前狀態」，不保證 range_od_flow/range_pagerank 有對應資料——
+ * 只有 is_complete=1 才可信任已經有完整聚合結果可用。
+ */
+export interface DateRange {
+  range_id: string;
+  range_type: 'month' | 'year' | 'holiday' | 'custom';
+  start_date: string;
+  end_date: string;
+  label: string | null;
+  day_count: number | null;
+  expected_day_count: number | null;
+  is_complete: number; // SQLite 布林以 0/1 儲存
+  computed_at: string | null;
+}
+
 /** 真實 PageRank 查詢結果列 */
 export interface RealPageRankRow {
   station_id: string;
   period: string;
   year: number;
   month: number;
+  pr_value: number;
+  pr_rank: number | null;
+  normalized_score: number | null;
+  name_zh: string;
+  line: string;
+  line_color: string | null;
+  is_transfer_station: number;
+}
+
+/** Range PageRank 查詢結果列（月／年通用；analytics 排名表用，含站點資訊） */
+export interface RangePageRankRow {
+  station_id: string;
+  period: string;
+  range_id: string;
   pr_value: number;
   pr_rank: number | null;
   normalized_score: number | null;
