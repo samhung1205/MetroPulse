@@ -26,6 +26,7 @@ import {
   getRangePageRankByStation,
   getRangeOdFlowFrom,
   getRangeOdFlowTo,
+  getHolidayEvent,
 } from '../db/queries';
 import { jsonDbError } from '../lib/d1-response';
 
@@ -50,18 +51,21 @@ function withTransitionProb<T extends { period: string; flow_count: number }>(
 
 /**
  * GET /api/station-detail/:id?range_type=year&year=YYYY
+ * GET /api/station-detail/:id?range_type=holiday&event_key=lunar-new-year&year=YYYY
  *
  * 取得站點完整詳情（用於站點詳情頁）。
  * 不帶 range 參數時行為與既有版本完全一致（合成軌道 pagerank_scores/transition_matrix）。
- * 帶 range_type=year&year= 且該年度已是完整年度時，PageRank 與連結證據改用同一個年度 range
- * 的 range_pagerank/range_od_flow（直接讀取，不重新計算），並在 metadata.range 回傳確認後的
- * range 資訊；年度不存在／不完整／解析不到對應站點時，不讓整頁失敗，只是不附加年度證據，並在
- * metadata.range_error 誠實說明原因，讓前端可以選擇顯示或忽略。
+ * 帶 range_type=year/holiday 且該 range 已完整時，PageRank 與連結證據改用同一個 range 的
+ * range_pagerank/range_od_flow（直接讀取，不重新計算），並在 metadata.range 回傳確認後的
+ * range 資訊；range 不存在／不完整／解析不到對應站點時，不讓整頁失敗，只是不附加證據，並在
+ * metadata.range_error 誠實說明原因，讓前端可以選擇顯示或忽略。連假 context 下絕不混用
+ * 月份／年度／synthetic 證據——要嘛是同一個 holiday range 的證據，要嘛明確標示不可用。
  */
 stationDetail.get('/:id', async (c) => {
   const id = c.req.param('id');
   const rangeTypeParam = c.req.query('range_type');
   const yearStr = c.req.query('year');
+  const eventKeyParam = c.req.query('event_key');
 
   try {
     // 並行查詢
@@ -108,53 +112,78 @@ stationDetail.get('/:id', async (c) => {
     let outboundRows: any[] = transResult.results ?? [];
     let inboundRows: any[] = inboundResult.results ?? [];
 
-    // Phase 3A.1：年度 temporal context——只有在 range 完整、且能解析出這一站的 canonical
-    // station_id 時才覆蓋成年度證據；其餘情況一律維持合成軌道（獨立進入 Detail 的既有預設行為）。
-    let rangeMeta: { range_id: string; range_type: 'year'; year: number; label: string | null; start_date: string; end_date: string; day_count: number | null } | null = null;
+    // Phase 3A.1/3B：年度／連假 temporal context——只有在 range 完整、且能解析出這一站的
+    // canonical station_id 時才覆蓋成該 range 的證據；其餘情況一律維持合成軌道（獨立進入
+    // Detail 的既有預設行為）。「2026 春節」context 下絕不偷偷改用月份／年度／synthetic 證據。
+    let rangeMeta: {
+      range_id: string; range_type: 'year' | 'holiday'; year: number; event_key: string | null; event_name: string | null;
+      label: string | null; start_date: string; end_date: string; day_count: number | null;
+    } | null = null;
     let rangeError: string | null = null;
 
-    if (rangeTypeParam === 'year') {
+    if (rangeTypeParam === 'year' || rangeTypeParam === 'holiday') {
+      const isHoliday = rangeTypeParam === 'holiday';
       const year = parseInt(yearStr ?? '', 10);
       if (!yearStr || !Number.isInteger(year)) {
-        rangeError = 'range_type=year 需要有效的 year 參數';
+        rangeError = `range_type=${rangeTypeParam} 需要有效的 year 參數`;
+      } else if (isHoliday && !eventKeyParam) {
+        rangeError = 'range_type=holiday 需要 event_key 參數';
       } else {
-        const rangeId = `year:${year}`;
-        const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
-        if (!dateRange) {
-          rangeError = `找不到 ${year} 年的旅運資料`;
-        } else if (!dateRange.is_complete) {
-          rangeError = `${year} 年的旅運資料不完整，暫時無法提供年度證據`;
-        } else {
-          const canonicalId = await resolveRangeStationId(c.env.mrt_rank_db, id, rangeId);
-          if (!canonicalId) {
-            rangeError = '此站目前沒有對應的年度旅運資料';
+        const rangeId = isHoliday ? `holiday:${eventKeyParam}:${year}` : `year:${year}`;
+        let holidayName: string | null = null;
+        if (isHoliday) {
+          const holidayEvent = await getHolidayEvent(c.env.mrt_rank_db, eventKeyParam!, year);
+          if (!holidayEvent) {
+            rangeError = `找不到連假事件：${eventKeyParam} ${year} 年`;
           } else {
-            const [rangePr, outboundRaw, inboundRaw] = await Promise.all([
-              getRangePageRankByStation(c.env.mrt_rank_db, rangeId, canonicalId),
-              getRangeOdFlowFrom(c.env.mrt_rank_db, rangeId, canonicalId),
-              getRangeOdFlowTo(c.env.mrt_rank_db, rangeId, canonicalId),
-            ]);
-            if (rangePr.length > 0) {
-              prTimeSeries = rangePr.map(p => ({
-                time_period: p.period,
-                time_period_label: TIME_PERIOD_LABELS[p.period as TimePeriod] || p.period,
-                pr_value: p.pr_value,
-                pr_rank: p.pr_rank,
-                normalized_score: p.normalized_score,
-              }));
-              outboundRows = withTransitionProb(outboundRaw).slice(0, 30);
-              inboundRows = withTransitionProb(inboundRaw).slice(0, 20);
-              rangeMeta = {
-                range_id: rangeId,
-                range_type: 'year',
-                year,
-                label: dateRange.label,
-                start_date: dateRange.start_date,
-                end_date: dateRange.end_date,
-                day_count: dateRange.day_count,
-              };
+            holidayName = holidayEvent.name_zh;
+          }
+        }
+
+        if (!rangeError) {
+          const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
+          if (!dateRange) {
+            rangeError = isHoliday
+              ? `${holidayName}（${year} 年）已登錄，但尚未計算逐日資料覆蓋狀態`
+              : `找不到 ${year} 年的旅運資料`;
+          } else if (!dateRange.is_complete) {
+            rangeError = isHoliday
+              ? `${holidayName}（${year} 年）的旅運資料不完整，暫時無法提供連假證據`
+              : `${year} 年的旅運資料不完整，暫時無法提供年度證據`;
+          } else {
+            const canonicalId = await resolveRangeStationId(c.env.mrt_rank_db, id, rangeId);
+            if (!canonicalId) {
+              rangeError = `此站目前沒有對應的${isHoliday ? '連假' : '年度'}旅運資料`;
             } else {
-              rangeError = '此站目前沒有對應的年度 PageRank 資料';
+              const [rangePr, outboundRaw, inboundRaw] = await Promise.all([
+                getRangePageRankByStation(c.env.mrt_rank_db, rangeId, canonicalId),
+                getRangeOdFlowFrom(c.env.mrt_rank_db, rangeId, canonicalId),
+                getRangeOdFlowTo(c.env.mrt_rank_db, rangeId, canonicalId),
+              ]);
+              if (rangePr.length > 0) {
+                prTimeSeries = rangePr.map(p => ({
+                  time_period: p.period,
+                  time_period_label: TIME_PERIOD_LABELS[p.period as TimePeriod] || p.period,
+                  pr_value: p.pr_value,
+                  pr_rank: p.pr_rank,
+                  normalized_score: p.normalized_score,
+                }));
+                outboundRows = withTransitionProb(outboundRaw).slice(0, 30);
+                inboundRows = withTransitionProb(inboundRaw).slice(0, 20);
+                rangeMeta = {
+                  range_id: rangeId,
+                  range_type: isHoliday ? 'holiday' : 'year',
+                  year,
+                  event_key: isHoliday ? eventKeyParam! : null,
+                  event_name: isHoliday ? holidayName : null,
+                  label: dateRange.label,
+                  start_date: dateRange.start_date,
+                  end_date: dateRange.end_date,
+                  day_count: dateRange.day_count,
+                };
+              } else {
+                rangeError = `此站目前沒有對應的${isHoliday ? '連假' : '年度'} PageRank 資料`;
+              }
             }
           }
         }

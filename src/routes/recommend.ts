@@ -32,6 +32,7 @@ import {
   getDateRange,
   getRangePageRankMap,
   getRangeTransitionMap,
+  getHolidayEvent,
 } from '../db/queries';
 import { jsonDbError } from '../lib/d1-response';
 
@@ -44,9 +45,9 @@ const VALID_PREFERENCES = Object.keys(PREFERENCE_LABELS);
 // 資料模式：auto（優先真實）/ real（強制真實）/ synthetic（強制合成）
 type DataMode = 'auto' | 'real' | 'synthetic';
 
-// 資料範圍模式：month（既有 Phase 1 行為，預設）/ year（Phase 3A 新增，generalized range）
-type RangeType = 'month' | 'year';
-const VALID_RANGE_TYPES: RangeType[] = ['month', 'year'];
+// 資料範圍模式：month（既有 Phase 1 行為，預設）/ year（Phase 3A）/ holiday（Phase 3B，generalized range）
+type RangeType = 'month' | 'year' | 'holiday';
+const VALID_RANGE_TYPES: RangeType[] = ['month', 'year', 'holiday'];
 
 /**
  * GET /api/recommend
@@ -85,18 +86,51 @@ recommend.get('/', async (c) => {
   }
   const rangeType = rangeTypeStr as RangeType;
 
-  if (rangeType === 'year' && dataMode === 'synthetic') {
+  if ((rangeType === 'year' || rangeType === 'holiday') && dataMode === 'synthetic') {
     return c.json({
       success: false,
-      error: 'data_mode=synthetic 不支援 range_type=year',
-      hint: '合成資料沒有年度概念；請移除 data_mode=synthetic，或改用 data_mode=real/auto',
+      error: `data_mode=synthetic 不支援 range_type=${rangeType}`,
+      hint: `合成資料沒有${rangeType === 'year' ? '年度' : '連假'}概念；請移除 data_mode=synthetic，或改用 data_mode=real/auto`,
     }, 400);
   }
 
   let requestedYear: number | null = null;
   let requestedMonth: number | null = null;
+  let requestedEventKey: string | null = null;
 
-  if (rangeType === 'year') {
+  if (rangeType === 'holiday') {
+    if (hasMonth) {
+      return c.json({
+        success: false,
+        error: 'range_type=holiday 不支援同時指定 month',
+        hint: '連假推薦只需要 event_key 與 year（如 range_type=holiday&event_key=lunar-new-year&year=2026），請移除 month 參數',
+      }, 400);
+    }
+    const eventKeyStr = c.req.query('event_key');
+    if (!eventKeyStr) {
+      return c.json({
+        success: false,
+        error: 'range_type=holiday 需要 event_key 參數',
+        hint: '請提供 event_key（如 event_key=lunar-new-year）',
+      }, 400);
+    }
+    if (!hasYear) {
+      return c.json({
+        success: false,
+        error: 'range_type=holiday 需要 year 參數',
+        hint: '請提供 year（如 range_type=holiday&event_key=lunar-new-year&year=2026）',
+      }, 400);
+    }
+    requestedYear = parseInt(yearStr!, 10);
+    if (!Number.isInteger(requestedYear)) {
+      return c.json({
+        success: false,
+        error: 'year 格式錯誤',
+        hint: 'year 需為西元年整數',
+      }, 400);
+    }
+    requestedEventKey = eventKeyStr;
+  } else if (rangeType === 'year') {
     if (hasMonth) {
       return c.json({
         success: false,
@@ -184,15 +218,74 @@ recommend.get('/', async (c) => {
       }, 404);
     }
 
-    // Step 3: 決定資料來源（真實 vs 合成；range_type=year 走完全獨立的 generalized range 路徑）
+    // Step 3: 決定資料來源（真實 vs 合成；range_type=year/holiday 走完全獨立的 generalized range 路徑）
     let usedRealData = false;
     let realDataMonth: { year: number; month: number; label: string } | null = null;
     let realPrMap: Map<string, { pr_value: number; normalized_score: number }> | null = null;
     let realTransMap: Map<string, { flow_count: number; transition_prob: number }> | null = null;
     let yearRangeLabel: string | null = null;
     let yearRangeMeta: { range_id: string; day_count: number; expected_day_count: number; start_date: string; end_date: string } | null = null;
+    let holidayRangeLabel: string | null = null;
+    let holidayEventName: string | null = null;
+    let holidayRangeMeta: { range_id: string; day_count: number; expected_day_count: number; start_date: string; end_date: string } | null = null;
 
-    if (rangeType === 'year' && dataMode !== 'synthetic') {
+    if (rangeType === 'holiday' && dataMode !== 'synthetic') {
+      const rangeId = `holiday:${requestedEventKey}:${requestedYear}`;
+
+      // 三種狀態必須區分清楚：event 不存在／event 存在但 daily coverage 不完整／event 已完整 materialize。
+      const holidayEvent = await getHolidayEvent(c.env.mrt_rank_db, requestedEventKey!, requestedYear!);
+      if (!holidayEvent) {
+        return c.json({
+          success: false,
+          error: `找不到連假事件：${requestedEventKey} ${requestedYear} 年`,
+          hint: '這個 event_key/year 尚未登錄在 holiday_events；請確認 event_key 拼字或改用其他年份',
+        }, 404);
+      }
+
+      const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
+      if (!dateRange) {
+        return c.json({
+          success: false,
+          error: `${holidayEvent.name_zh}（${requestedYear} 年）已登錄，但尚未計算逐日資料覆蓋狀態`,
+          hint: '這個連假事件的 daily_od_flow 覆蓋尚未被計算過，暫時無法提供連假推薦',
+        }, 404);
+      }
+      if (!dateRange.is_complete) {
+        return c.json({
+          success: false,
+          error: `${holidayEvent.name_zh}（${requestedYear} 年）的旅運資料不完整，目前無法提供連假推薦`,
+          hint: '連假推薦需要整段連假期間每一天、每個既有時段都有逐日資料才會計算；不完整連假不會假裝成完整，也不會用缺天數/缺時段補 0',
+          coverage: {
+            actual_day_count: dateRange.day_count,
+            expected_day_count: dateRange.expected_day_count,
+            start_date: dateRange.start_date,
+            end_date: dateRange.end_date,
+            note: dateRange.coverage_note,
+          },
+        }, 404);
+      }
+
+      if (dataMode === 'real' || dataMode === 'auto') {
+        const [prMap, transMap] = await Promise.all([
+          getRangePageRankMap(c.env.mrt_rank_db, rangeId, timePeriod),
+          getRangeTransitionMap(c.env.mrt_rank_db, from, rangeId, timePeriod),
+        ]);
+        if (prMap.size > 0) {
+          usedRealData = true;
+          realPrMap = prMap;
+          realTransMap = transMap;
+          holidayRangeLabel = dateRange.label || `${requestedYear}年${holidayEvent.name_zh}`;
+          holidayEventName = holidayEvent.name_zh;
+          holidayRangeMeta = {
+            range_id: rangeId,
+            day_count: dateRange.day_count ?? 0,
+            expected_day_count: dateRange.expected_day_count ?? 0,
+            start_date: dateRange.start_date,
+            end_date: dateRange.end_date,
+          };
+        }
+      }
+    } else if (rangeType === 'year' && dataMode !== 'synthetic') {
       const rangeId = `year:${requestedYear}`;
       const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
 
@@ -335,11 +428,22 @@ recommend.get('/', async (c) => {
         data_month: realDataMonth ? `${realDataMonth.year}年${realDataMonth.month}月` : null,
         data_year: realDataMonth ? realDataMonth.year : null,
         data_month_num: realDataMonth ? realDataMonth.month : null,
-        // Phase 3A 新增：generalized range 的確認後 metadata（前端必須用這裡的值顯示實際資料範圍，
+        // Phase 3A/3B 新增：generalized range 的確認後 metadata（前端必須用這裡的值顯示實際資料範圍，
         // 不可用送出前的草稿選擇冒充——range_type/range_label 只在真的用了該 range 的資料時才非 null）
-        range_type: yearRangeMeta ? 'year' : (realDataMonth ? 'month' : null),
-        range_label: yearRangeMeta ? yearRangeLabel : (realDataMonth ? `${realDataMonth.year}年${realDataMonth.month}月` : null),
-        range: yearRangeMeta ? {
+        range_type: holidayRangeMeta ? 'holiday' : (yearRangeMeta ? 'year' : (realDataMonth ? 'month' : null)),
+        range_label: holidayRangeMeta ? holidayRangeLabel : (yearRangeMeta ? yearRangeLabel : (realDataMonth ? `${realDataMonth.year}年${realDataMonth.month}月` : null)),
+        range: holidayRangeMeta ? {
+          range_id: holidayRangeMeta.range_id,
+          range_type: 'holiday',
+          event_key: requestedEventKey,
+          event_name: holidayEventName,
+          year: requestedYear,
+          start_date: holidayRangeMeta.start_date,
+          end_date: holidayRangeMeta.end_date,
+          day_count: holidayRangeMeta.day_count,
+          expected_day_count: holidayRangeMeta.expected_day_count,
+          is_complete: true,
+        } : yearRangeMeta ? {
           range_id: yearRangeMeta.range_id,
           range_type: 'year',
           year: requestedYear,

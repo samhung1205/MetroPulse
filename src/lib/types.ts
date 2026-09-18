@@ -239,12 +239,24 @@ export interface DateRange {
   range_type: 'month' | 'year' | 'holiday' | 'custom';
   start_date: string;
   end_date: string;
+  holiday_event_id: string | null; // range_type='holiday' 時存 holiday_events.event_key；其餘 range_type 為 null
   label: string | null;
   day_count: number | null;
   expected_day_count: number | null;
   is_complete: number; // SQLite 布林以 0/1 儲存
   computed_at: string | null;
   coverage_note: string | null; // is_complete=0 時說明缺失原因（缺天數／缺哪天的哪個 period）；完整時為 null
+}
+
+/** 連假 metadata（人工維護，見 migrations/0007_holiday_events.sql）。(event_key, year) 唯一。 */
+export interface HolidayEvent {
+  event_key: string;
+  year: number;
+  name_zh: string;
+  start_date: string;
+  end_date: string;
+  source: string | null;
+  updated_at: string | null;
 }
 
 /** 真實 PageRank 查詢結果列 */

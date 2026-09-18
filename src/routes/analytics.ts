@@ -22,6 +22,13 @@ import {
   getCompleteYearRanges,
   getRangePageRank,
   getDateRange,
+  getCompleteHolidayRanges,
+  getHolidayEvent,
+  getHolidayEventsByKey,
+  resolveRangeStationId,
+  getRangePageRankByStation,
+  getRangeOdFlowFrom,
+  getRangeOdFlowTo,
 } from '../db/queries';
 
 const analytics = new Hono<{ Bindings: Env }>();
@@ -62,6 +69,138 @@ analytics.get('/years', async (c) => {
 });
 
 // ============================================================
+// GET /api/analytics/holidays — 已完整計算的連假 range 列表，依 event_key 分組（Phase 3B）
+// ============================================================
+// 只回傳完整（is_complete=1）連假實例；event 與 year 選項一律由這個端點決定，前端不 hardcode。
+analytics.get('/holidays', async (c) => {
+  try {
+    const ranges = await getCompleteHolidayRanges(c.env.mrt_rank_db);
+    const byEvent = new Map<string, { event_key: string; name_zh: string; years: any[] }>();
+    for (const r of ranges) {
+      if (!byEvent.has(r.event_key)) {
+        byEvent.set(r.event_key, { event_key: r.event_key, name_zh: r.name_zh, years: [] });
+      }
+      byEvent.get(r.event_key)!.years.push({
+        year: r.year,
+        range_id: r.range_id,
+        label: r.label,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        day_count: r.day_count,
+        computed_at: r.computed_at,
+      });
+    }
+    return c.json({ success: true, events: Array.from(byEvent.values()) });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+// ============================================================
+// GET /api/analytics/holiday-comparison?event_key=&period=&station=
+// 歷年同連假比較（Phase 3B.1）——同一 event_key、不同年份的 categorical 比較，不是連續趨勢。
+// 只讀既有 holiday_events/date_ranges/range_pagerank/range_od_flow，不重新計算 PageRank。
+// ============================================================
+analytics.get('/holiday-comparison', async (c) => {
+  const eventKey  = c.req.query('event_key');
+  const period    = c.req.query('period') || 'morning_peak';
+  const stationId = c.req.query('station');
+
+  const validPeriods = ['morning_peak', 'morning', 'noon', 'afternoon', 'evening_peak', 'night'];
+  if (!eventKey) {
+    return c.json({ success: false, error: '請提供 event_key 參數' }, 400);
+  }
+  if (!stationId) {
+    return c.json({ success: false, error: '請提供 station 參數' }, 400);
+  }
+  if (!validPeriods.includes(period)) {
+    return c.json({ success: false, error: '無效的時段代碼' }, 400);
+  }
+
+  try {
+    // 刻意取「所有」已登錄年份（不只完整年份），讓不完整／尚未計算的年份也能在比較表裡
+    // 被明確標示，而不是悄悄從清單消失、讓使用者誤以為那個年份沒有登錄過。
+    const events = await getHolidayEventsByKey(c.env.mrt_rank_db, eventKey);
+    if (events.length === 0) {
+      return c.json({ success: false, error: `找不到連假事件：${eventKey}` }, 404);
+    }
+    const eventName = events[0].name_zh;
+
+    const years = await Promise.all(events.map(async (ev) => {
+      const rangeId = `holiday:${eventKey}:${ev.year}`;
+      const base = {
+        year: ev.year,
+        range_id: rangeId,
+        start_date: ev.start_date,
+        end_date: ev.end_date,
+        event_source: ev.source,
+      };
+
+      const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
+      if (!dateRange) {
+        return {
+          ...base, status: 'not_materialized',
+          reason: '已登錄，但尚未計算逐日資料覆蓋狀態',
+          day_count: null, expected_day_count: null, pagerank: null, flow: null,
+        };
+      }
+      if (!dateRange.is_complete) {
+        return {
+          ...base, status: 'incomplete',
+          reason: dateRange.coverage_note || '這個年份的旅運資料不完整',
+          day_count: dateRange.day_count, expected_day_count: dateRange.expected_day_count,
+          pagerank: null, flow: null,
+        };
+      }
+
+      const canonicalId = await resolveRangeStationId(c.env.mrt_rank_db, stationId, rangeId);
+      if (!canonicalId) {
+        return {
+          ...base, status: 'unavailable',
+          reason: '此站在這個連假 range 沒有對應資料',
+          day_count: dateRange.day_count, expected_day_count: dateRange.expected_day_count,
+          pagerank: null, flow: null,
+        };
+      }
+
+      const [prRows, outboundRows, inboundRows] = await Promise.all([
+        getRangePageRankByStation(c.env.mrt_rank_db, rangeId, canonicalId),
+        getRangeOdFlowFrom(c.env.mrt_rank_db, rangeId, canonicalId),
+        getRangeOdFlowTo(c.env.mrt_rank_db, rangeId, canonicalId),
+      ]);
+      const pr = prRows.find(p => p.period === period) || null;
+      const dayCount = dateRange.day_count && dateRange.day_count > 0 ? dateRange.day_count : null;
+      const outboundTotal = outboundRows.filter(r => r.period === period).reduce((s, r) => s + r.flow_count, 0);
+      const inboundTotal = inboundRows.filter(r => r.period === period).reduce((s, r) => s + r.flow_count, 0);
+
+      return {
+        ...base, status: 'complete', reason: null,
+        day_count: dateRange.day_count,
+        expected_day_count: dateRange.expected_day_count,
+        pagerank: pr ? { pr_value: pr.pr_value, pr_rank: pr.pr_rank, normalized_score: pr.normalized_score } : null,
+        flow: {
+          outbound_total: outboundTotal,
+          inbound_total: inboundTotal,
+          // day_count 為 null（理論上不會發生在 is_complete=1 的列）時不假裝算得出平均值。
+          outbound_avg_daily: dayCount ? outboundTotal / dayCount : null,
+          inbound_avg_daily: dayCount ? inboundTotal / dayCount : null,
+        },
+        source: { pagerank_source: 'range_pagerank', flow_source: 'range_od_flow' },
+      };
+    }));
+
+    return c.json({
+      success: true,
+      query: { event_key: eventKey, period, station: stationId },
+      event: { event_key: eventKey, name_zh: eventName },
+      years,
+    });
+  } catch (e) {
+    return c.json({ success: false, error: String(e) }, 500);
+  }
+});
+
+// ============================================================
 // GET /api/analytics/latest — 最新月份基本摘要
 // ============================================================
 analytics.get('/latest', async (c) => {
@@ -82,6 +221,7 @@ analytics.get('/latest', async (c) => {
 analytics.get('/pagerank', async (c) => {
   const yearStr    = c.req.query('year');
   const monthStr   = c.req.query('month');
+  const eventKey   = c.req.query('event_key');
   const period     = c.req.query('period') || 'morning_peak';
   const topN       = Math.min(parseInt(c.req.query('top_n') || '20', 10), 100);
   const rangeType  = c.req.query('range_type') || 'month';
@@ -89,6 +229,55 @@ analytics.get('/pagerank', async (c) => {
   const validPeriods = ['morning_peak', 'morning', 'noon', 'afternoon', 'evening_peak', 'night'];
   if (!validPeriods.includes(period)) {
     return c.json({ success: false, error: '無效的時段代碼' }, 400);
+  }
+
+  if (rangeType === 'holiday') {
+    if (!eventKey) {
+      return c.json({ success: false, error: 'range_type=holiday 需要 event_key 參數' }, 400);
+    }
+    if (!yearStr) {
+      return c.json({ success: false, error: 'range_type=holiday 需要 year 參數' }, 400);
+    }
+    const year = parseInt(yearStr, 10);
+    if (!Number.isInteger(year)) {
+      return c.json({ success: false, error: 'year 格式錯誤' }, 400);
+    }
+    const rangeId = `holiday:${eventKey}:${year}`;
+    try {
+      const holidayEvent = await getHolidayEvent(c.env.mrt_rank_db, eventKey, year);
+      if (!holidayEvent) {
+        return c.json({ success: false, error: `找不到連假事件：${eventKey} ${year} 年` }, 404);
+      }
+      const dateRange = await getDateRange(c.env.mrt_rank_db, rangeId);
+      if (!dateRange) {
+        return c.json({ success: false, error: `${holidayEvent.name_zh}（${year} 年）已登錄，但尚未計算逐日資料覆蓋狀態` }, 404);
+      }
+      if (!dateRange.is_complete) {
+        return c.json({
+          success: false,
+          error: `${holidayEvent.name_zh}（${year} 年）的旅運資料不完整，目前無法提供連假排名`,
+          coverage: { actual_day_count: dateRange.day_count, expected_day_count: dateRange.expected_day_count, note: dateRange.coverage_note },
+        }, 404);
+      }
+      const rankings = await getRangePageRank(c.env.mrt_rank_db, rangeId, period, topN);
+      return c.json({
+        success: true,
+        query: { range_type: 'holiday', event_key: eventKey, year, period, top_n: topN },
+        data_source: 'real',
+        range: {
+          range_id: rangeId,
+          event_key: eventKey,
+          year,
+          label: dateRange.label,
+          start_date: dateRange.start_date,
+          end_date: dateRange.end_date,
+          day_count: dateRange.day_count,
+        },
+        rankings,
+      });
+    } catch (e) {
+      return c.json({ success: false, error: String(e) }, 500);
+    }
   }
 
   if (rangeType === 'year') {

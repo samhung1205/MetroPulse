@@ -237,6 +237,7 @@ function renderHomePage(): string {
         <div id="range-mode-options" class="mp-query-preferences mp-range-mode-options">
           <label class="mp-query-chip"><input type="radio" name="range_mode" value="month" checked><span class="mp-query-chip-content">月份</span></label>
           <label class="mp-query-chip"><input type="radio" name="range_mode" value="year"><span class="mp-query-chip-content">年度</span></label>
+          <label class="mp-query-chip"><input type="radio" name="range_mode" value="holiday"><span class="mp-query-chip-content">連假</span></label>
         </div>
         <div id="range-month-panel">
           <select id="sel-data-month" class="mp-query-control" aria-label="選擇資料月份"></select>
@@ -246,6 +247,12 @@ function renderHomePage(): string {
           <select id="sel-data-year" class="mp-query-control" aria-label="選擇資料年度"></select>
           <p id="range-year-help" class="mp-query-help">年度推薦需要完整 365（閏年 366）天的逐日資料才會計算，可能少於已匯入的月份數。</p>
           <p id="range-year-unavailable" class="mp-query-help" role="status" hidden>目前沒有完整年度資料可用，請改用月份查詢。</p>
+        </div>
+        <div id="range-holiday-panel" hidden>
+          <select id="sel-data-holiday-event" class="mp-query-control" aria-label="選擇連假"></select>
+          <select id="sel-data-holiday-year" class="mp-query-control" aria-label="選擇連假年份"></select>
+          <p id="range-holiday-help" class="mp-query-help">連假推薦需要整段連假期間每一天、每個時段的資料都完整才會計算。</p>
+          <p id="range-holiday-unavailable" class="mp-query-help" role="status" hidden>目前沒有完整連假資料可用，請改用月份或年度查詢。</p>
         </div>
         <p id="range-mode-error" class="mp-query-error" role="alert" hidden></p>
       </fieldset>
@@ -393,9 +400,10 @@ function renderHomePage(): string {
     let breakdownChart = null;
     let availableDataMonths = [];
     let availableDataYears = [];
+    let availableHolidayEvents = [];
     const queryState = {
       draftInput: '', committedOrigin: null,
-      draftQuery: { timePeriod: 'afternoon', preference: 'all', monthValue: '', rangeMode: 'month', yearValue: '' },
+      draftQuery: { timePeriod: 'afternoon', preference: 'all', monthValue: '', rangeMode: 'month', yearValue: '', holidayEventKey: '', holidayYearValue: '' },
       submittedQuery: null, currentRequest: null, requestSequence: 0, phase: 'idle'
     };
     let suggestions = [];
@@ -421,7 +429,7 @@ function renderHomePage(): string {
       updateOffset();
       if (nav && typeof ResizeObserver !== 'undefined') new ResizeObserver(updateOffset).observe(nav);
       applyQueryFromUrl();
-      await Promise.all([loadStations(), loadDataMonths(), loadDataYears()]);
+      await Promise.all([loadStations(), loadDataMonths(), loadDataYears(), loadDataHolidays()]);
       updateRangeFieldVisibility();
       applyRangeContextFromUrl();
       // Do not overwrite a station the user started entering while the list loaded.
@@ -550,6 +558,54 @@ function renderHomePage(): string {
       byId('range-year-unavailable').hidden = hasYears;
     }
 
+    // 連假 event／年份選項一律來自 API，不 hardcode：event 與年份都只列出已完整 materialize 的實例。
+    async function loadDataHolidays() {
+      try {
+        const data = await fetchStationList('/api/analytics/holidays');
+        availableHolidayEvents = data.success && Array.isArray(data.events) ? data.events : [];
+      } catch (_) {
+        availableHolidayEvents = [];
+      }
+      const eventSelect = byId('sel-data-holiday-event');
+      eventSelect.replaceChildren();
+      availableHolidayEvents.forEach(ev => {
+        const option = document.createElement('option');
+        option.value = ev.event_key;
+        option.textContent = ev.name_zh;
+        eventSelect.appendChild(option);
+      });
+      const hasEvents = availableHolidayEvents.length > 0;
+      if (hasEvents && !availableHolidayEvents.some(ev => ev.event_key === queryState.draftQuery.holidayEventKey)) {
+        queryState.draftQuery.holidayEventKey = availableHolidayEvents[0].event_key;
+        queryState.draftQuery.holidayYearValue = '';
+      }
+      eventSelect.value = queryState.draftQuery.holidayEventKey || '';
+      eventSelect.hidden = !hasEvents;
+      populateHolidayYearOptions();
+      byId('range-holiday-unavailable').hidden = hasEvents;
+    }
+
+    // 年份選項依目前選中的 event 過濾——同一 event_key 跨年份各自獨立的 materialized 實例。
+    function populateHolidayYearOptions() {
+      const yearSelect = byId('sel-data-holiday-year');
+      yearSelect.replaceChildren();
+      const event = availableHolidayEvents.find(ev => ev.event_key === queryState.draftQuery.holidayEventKey);
+      const years = event ? event.years : [];
+      years.forEach(y => {
+        const option = document.createElement('option');
+        option.value = String(y.year);
+        option.textContent = y.label || (y.year + '年');
+        yearSelect.appendChild(option);
+      });
+      const hasYears = years.length > 0;
+      if (hasYears && !years.some(y => String(y.year) === queryState.draftQuery.holidayYearValue)) {
+        queryState.draftQuery.holidayYearValue = String(years[0].year);
+      }
+      if (!hasYears) queryState.draftQuery.holidayYearValue = '';
+      yearSelect.value = queryState.draftQuery.holidayYearValue || '';
+      yearSelect.hidden = !hasYears;
+    }
+
     // 「資料範圍」欄位整體只在有任何真實月份資料時出現——沒有真實資料就完全沿用既有 synthetic/fallback 行為，
     // 不虛構月份或年度選項；年度分頁即使沒有完整年度資料，仍保持可見並顯示誠實的 unavailable 狀態，
     // 不影響月份推薦。
@@ -578,7 +634,27 @@ function renderHomePage(): string {
     // 無效或不存在的年度不會被接受——不虛構選項，維持既有的誠實 fallback 風格。
     function applyRangeContextFromUrl() {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('range_type') === 'year') {
+      const rangeTypeParam = params.get('range_type');
+      if (rangeTypeParam === 'holiday') {
+        const eventKeyParam = params.get('event_key');
+        const yearParam = params.get('year');
+        const event = availableHolidayEvents.find(ev => ev.event_key === eventKeyParam);
+        const match = event && event.years.find(y => String(y.year) === yearParam);
+        if (event && match) {
+          queryState.draftQuery.rangeMode = 'holiday';
+          queryState.draftQuery.holidayEventKey = event.event_key;
+          queryState.draftQuery.holidayYearValue = String(match.year);
+          const radio = document.querySelector('input[name="range_mode"][value="holiday"]');
+          if (radio) radio.checked = true;
+          byId('range-month-panel').hidden = true;
+          byId('range-year-panel').hidden = true;
+          byId('range-holiday-panel').hidden = false;
+          byId('sel-data-holiday-event').value = queryState.draftQuery.holidayEventKey;
+          populateHolidayYearOptions();
+        }
+        return;
+      }
+      if (rangeTypeParam === 'year') {
         const yearParam = params.get('year');
         const match = availableDataYears.find(y => String(y.year) === yearParam);
         if (match) {
@@ -588,6 +664,7 @@ function renderHomePage(): string {
           if (radio) radio.checked = true;
           byId('range-month-panel').hidden = true;
           byId('range-year-panel').hidden = false;
+          byId('range-holiday-panel').hidden = true;
           byId('sel-data-year').value = queryState.draftQuery.yearValue;
         }
         return;
@@ -604,6 +681,7 @@ function renderHomePage(): string {
           if (radio) radio.checked = true;
           byId('range-month-panel').hidden = false;
           byId('range-year-panel').hidden = true;
+          byId('range-holiday-panel').hidden = true;
           byId('sel-data-month').value = monthValue;
         }
       }
@@ -670,11 +748,22 @@ function renderHomePage(): string {
         queryState.draftQuery.yearValue = event.target.value;
         queryChanged();
       });
+      byId('sel-data-holiday-event').addEventListener('change', event => {
+        queryState.draftQuery.holidayEventKey = event.target.value;
+        queryState.draftQuery.holidayYearValue = '';
+        populateHolidayYearOptions();
+        queryChanged();
+      });
+      byId('sel-data-holiday-year').addEventListener('change', event => {
+        queryState.draftQuery.holidayYearValue = event.target.value;
+        queryChanged();
+      });
       byId('range-mode-options').addEventListener('change', event => {
         if (!event.target.matches('input[name="range_mode"]')) return;
         queryState.draftQuery.rangeMode = event.target.value;
         byId('range-month-panel').hidden = event.target.value !== 'month';
         byId('range-year-panel').hidden = event.target.value !== 'year';
+        byId('range-holiday-panel').hidden = event.target.value !== 'holiday';
         clearOriginError();
         byId('range-mode-error').hidden = true;
         queryChanged();
@@ -982,7 +1071,9 @@ function renderHomePage(): string {
         && snapshot.preference === queryState.draftQuery.preference
         && snapshot.range_mode === queryState.draftQuery.rangeMode
         && snapshot.month_value === (queryState.draftQuery.monthValue || '')
-        && snapshot.year_value === (queryState.draftQuery.yearValue || '');
+        && snapshot.year_value === (queryState.draftQuery.yearValue || '')
+        && snapshot.holiday_event_key === (queryState.draftQuery.holidayEventKey || '')
+        && snapshot.holiday_year_value === (queryState.draftQuery.holidayYearValue || '');
     }
 
     function queryChanged() {
@@ -1034,6 +1125,12 @@ function renderHomePage(): string {
         focusAndReveal(byId('sel-data-year'));
         return;
       }
+      if (rangeMode === 'holiday' && (!queryState.draftQuery.holidayEventKey || !queryState.draftQuery.holidayYearValue)) {
+        byId('range-mode-error').textContent = '目前沒有完整連假資料可用，請改選月份或年度查詢。';
+        byId('range-mode-error').hidden = false;
+        focusAndReveal(byId('sel-data-holiday-event'));
+        return;
+      }
       if (queryState.currentRequest && matchesDraft(queryState.currentRequest.snapshot)) return;
       closeSuggestions();
       clearOriginError();
@@ -1042,8 +1139,11 @@ function renderHomePage(): string {
       const checkedPreference = document.querySelector('input[name="preference"]:checked');
       const monthValue = queryState.draftQuery.monthValue || '';
       const yearValue = queryState.draftQuery.yearValue || '';
+      const holidayEventKey = queryState.draftQuery.holidayEventKey || '';
+      const holidayYearValue = queryState.draftQuery.holidayYearValue || '';
       const [reqYear, reqMonth] = rangeMode === 'month' && monthValue ? monthValue.split('-').map(Number) : [null, null];
       const requestedYearForYearMode = rangeMode === 'year' && yearValue ? Number(yearValue) : null;
+      const requestedYearForHolidayMode = rangeMode === 'holiday' && holidayYearValue ? Number(holidayYearValue) : null;
       const snapshot = Object.freeze({
         from_station: Object.freeze({ id: queryState.committedOrigin.id, name: queryState.committedOrigin.name_zh }),
         time_period: queryState.draftQuery.timePeriod,
@@ -1053,8 +1153,11 @@ function renderHomePage(): string {
         range_mode: rangeMode,
         month_value: monthValue,
         year_value: yearValue,
-        requested_year: rangeMode === 'year' ? requestedYearForYearMode : reqYear,
+        holiday_event_key: holidayEventKey,
+        holiday_year_value: holidayYearValue,
+        requested_year: rangeMode === 'year' ? requestedYearForYearMode : rangeMode === 'holiday' ? requestedYearForHolidayMode : reqYear,
         requested_month: rangeMode === 'month' ? reqMonth : null,
+        requested_event_key: rangeMode === 'holiday' ? holidayEventKey : null,
         top_n: 5
       });
       const request = { id: ++queryState.requestSequence, snapshot, controller: new AbortController(), timeout: null, timedOut: false };
@@ -1070,7 +1173,11 @@ function renderHomePage(): string {
       const isCurrent = () => queryState.currentRequest === request && matchesDraft(snapshot);
       try {
         const params = new URLSearchParams({ from: snapshot.from_station.id, time_period: snapshot.time_period, preference: snapshot.preference, top_n: String(snapshot.top_n) });
-        if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
+        if (snapshot.range_mode === 'holiday' && snapshot.requested_event_key && snapshot.requested_year != null) {
+          params.set('range_type', 'holiday');
+          params.set('event_key', snapshot.requested_event_key);
+          params.set('year', String(snapshot.requested_year));
+        } else if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
           params.set('range_type', 'year');
           params.set('year', String(snapshot.requested_year));
         } else if (snapshot.requested_year != null && snapshot.requested_month != null) {
@@ -1094,7 +1201,7 @@ function renderHomePage(): string {
         byId('query-status').textContent = '';
         byId('query-error').hidden = false;
         byId('query-error-message').textContent = error && error.cause === 'not-found'
-          ? error.message + (snapshot.range_mode === 'year' ? '，請改選其他年度。' : '，請改選其他月份。')
+          ? error.message + (snapshot.range_mode === 'holiday' ? '，請改選其他連假或年份。' : snapshot.range_mode === 'year' ? '，請改選其他年度。' : '，請改選其他月份。')
           : request.timedOut
             ? '查詢等候時間較長，條件已保留，請重試。'
             : '暫時無法取得推薦，條件已保留。請確認連線後重試。';
@@ -1157,8 +1264,12 @@ function renderHomePage(): string {
         preference: snapshot.preference
       });
       // 把本次推薦用的資料範圍一起帶進 Detail 的 deep link，讓「回本次推薦」與 Detail 頁的
-      // 年度／月度證據能維持同一個 temporal context，而不是每次都悄悄退回月模式。
-      if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
+      // 連假／年度／月度證據能維持同一個 temporal context，而不是每次都悄悄退回月模式。
+      if (snapshot.range_mode === 'holiday' && snapshot.requested_event_key && snapshot.requested_year != null) {
+        params.set('range_type', 'holiday');
+        params.set('event_key', snapshot.requested_event_key);
+        params.set('year', String(snapshot.requested_year));
+      } else if (snapshot.range_mode === 'year' && snapshot.requested_year != null) {
         params.set('range_type', 'year');
         params.set('year', String(snapshot.requested_year));
       } else if (snapshot.requested_year != null && snapshot.requested_month != null) {
@@ -1229,7 +1340,9 @@ function renderHomePage(): string {
     }
 
     function renderMetadata(meta) {
-      const rangeSentence = meta.range_type === 'year' && meta.range && meta.range.year
+      const rangeSentence = meta.range_type === 'holiday' && meta.range && meta.range.year
+        ? '依 ' + meta.range.year + ' ' + (meta.range.event_name || meta.range_label || '') + '連假旅運資料（' + meta.range.start_date + ' ～ ' + meta.range.end_date + '）'
+        : meta.range_type === 'year' && meta.range && meta.range.year
         ? '依 ' + meta.range.year + ' 全年度旅運資料'
         : (typeof meta.range_label === 'string' && meta.range_label.trim() ? '依 ' + meta.range_label.trim() + ' 旅運資料' : null);
       let source = '資料來源未知；資料範圍未知。';
@@ -1306,8 +1419,13 @@ function renderStationDetailPage(stationId: string): string {
       const rangeTypeParam = params.get('range_type');
       const yearParam = params.get('year');
       const monthParam = params.get('month');
-      let rangeType = null, year = null, month = null;
-      if (rangeTypeParam === 'year' && /^\\d{4}$/.test(yearParam || '')) {
+      const eventKeyParam = params.get('event_key');
+      let rangeType = null, year = null, month = null, eventKey = null;
+      if (rangeTypeParam === 'holiday' && /^\\d{4}$/.test(yearParam || '') && eventKeyParam) {
+        rangeType = 'holiday';
+        year = Number(yearParam);
+        eventKey = eventKeyParam;
+      } else if (rangeTypeParam === 'year' && /^\\d{4}$/.test(yearParam || '')) {
         rangeType = 'year';
         year = Number(yearParam);
       } else if (/^\\d{4}$/.test(yearParam || '') && /^(0?[1-9]|1[0-2])$/.test(monthParam || '')) {
@@ -1315,7 +1433,7 @@ function renderStationDetailPage(stationId: string): string {
         year = Number(yearParam);
         month = Number(monthParam);
       }
-      return Object.freeze({ from, timePeriod, preference, rangeType, year, month });
+      return Object.freeze({ from, timePeriod, preference, rangeType, year, month, eventKey });
     }
 
     function homeQueryUrl(from, restore) {
@@ -1323,7 +1441,11 @@ function renderStationDetailPage(stationId: string): string {
       if (recommendationContext) {
         params.set('time_period', recommendationContext.timePeriod);
         params.set('preference', recommendationContext.preference);
-        if (recommendationContext.rangeType === 'year') {
+        if (recommendationContext.rangeType === 'holiday') {
+          params.set('range_type', 'holiday');
+          params.set('event_key', recommendationContext.eventKey);
+          params.set('year', String(recommendationContext.year));
+        } else if (recommendationContext.rangeType === 'year') {
           params.set('range_type', 'year');
           params.set('year', String(recommendationContext.year));
         } else if (recommendationContext.rangeType === 'month') {
@@ -1368,7 +1490,11 @@ function renderStationDetailPage(stationId: string): string {
       document.getElementById('detail-content').classList.add('hidden');
       try {
         const detailParams = new URLSearchParams();
-        if (recommendationContext && recommendationContext.rangeType === 'year') {
+        if (recommendationContext && recommendationContext.rangeType === 'holiday') {
+          detailParams.set('range_type', 'holiday');
+          detailParams.set('event_key', recommendationContext.eventKey);
+          detailParams.set('year', String(recommendationContext.year));
+        } else if (recommendationContext && recommendationContext.rangeType === 'year') {
           detailParams.set('range_type', 'year');
           detailParams.set('year', String(recommendationContext.year));
         }
@@ -1377,7 +1503,8 @@ function renderStationDetailPage(stationId: string): string {
         const recommendationPromise = recommendationContext
           ? fetchJson('/api/recommend?' + (() => {
               const p = new URLSearchParams({ from: recommendationContext.from, time_period: recommendationContext.timePeriod, preference: recommendationContext.preference, top_n:'5' });
-              if (recommendationContext.rangeType === 'year') { p.set('range_type', 'year'); p.set('year', String(recommendationContext.year)); }
+              if (recommendationContext.rangeType === 'holiday') { p.set('range_type', 'holiday'); p.set('event_key', recommendationContext.eventKey); p.set('year', String(recommendationContext.year)); }
+              else if (recommendationContext.rangeType === 'year') { p.set('range_type', 'year'); p.set('year', String(recommendationContext.year)); }
               else if (recommendationContext.rangeType === 'month') { p.set('year', String(recommendationContext.year)); p.set('month', String(recommendationContext.month)); }
               return p.toString();
             })()).catch(() => null)
@@ -1421,9 +1548,11 @@ function renderStationDetailPage(stationId: string): string {
         ? preference.categories.indexOf(recommendationContext.preference) : -1;
       const relationReason = preferenceReason(recommendation);
       const connectivity = recommendation?.score_breakdown?.connectivity?.normalized;
-      // 推薦摘要句子的資料範圍描述，月／年通用：優先用 API 確認後的 range_label／range.year，
+      // 推薦摘要句子的資料範圍描述，月／年／連假通用：優先用 API 確認後的 range_label／range.year，
       // 不用送出時的草稿選擇冒充，和首頁 renderMetadata() 的邏輯一致。
-      const recSourceLabel = recommendationMetadata?.range_type === 'year' && recommendationMetadata.range?.year
+      const recSourceLabel = recommendationMetadata?.range_type === 'holiday' && recommendationMetadata.range?.year
+        ? recommendationMetadata.range.year + ' ' + (recommendationMetadata.range.event_name || recommendationMetadata.range_label || '') + '連假'
+        : recommendationMetadata?.range_type === 'year' && recommendationMetadata.range?.year
         ? recommendationMetadata.range.year + ' 全年度'
         : (recommendationMetadata?.range_label || recommendationMetadata?.data_month || '月份未知的');
       const relationHtml = recommendationContext
@@ -1436,11 +1565,14 @@ function renderStationDetailPage(stationId: string): string {
       const bestPeriod = pagerank.best_period
         ? '<p><strong>PageRank 最高時段：</strong>' + escapeHtml(pagerank.best_period.time_period_label) + '，該時段排名 #' + escapeHtml(pagerank.best_period.pr_rank ?? '未知') + '。這表示該時段的路網相對重要性，不是即時擁擠度或最佳遊玩時間。</p>'
         : '<p>目前沒有可用的 PageRank 時段資料。</p>';
-      // 資料範圍：克制的一行文字，不做成獨立卡片。只有 Detail API 實際用了年度證據才顯示確認後的
-      // range；若使用者是從年度推薦進來但這一站年度證據不可用，誠實顯示原因，不假裝有年度資料。
-      const temporalRangeNote = metadata?.range && metadata.range_type === 'year'
+      // 資料範圍：克制的一行文字，不做成獨立卡片。只有 Detail API 實際用了該 range 的證據才顯示
+      // 確認後的 range；若使用者是從年度／連假推薦進來但這一站的證據不可用，誠實顯示原因，不假裝
+      // 有資料，也絕不在「2026 春節」context 下偷偷混用月份／年度／synthetic 證據。
+      const temporalRangeNote = metadata?.range && metadata.range_type === 'holiday'
+        ? '<p class="mp-data-limit">資料範圍：' + escapeHtml(metadata.range.year) + ' ' + escapeHtml(metadata.range.event_name || '') + '連假（' + escapeHtml(metadata.range.start_date) + ' ～ ' + escapeHtml(metadata.range.end_date) + '）</p>'
+        : metadata?.range && metadata.range_type === 'year'
         ? '<p class="mp-data-limit">資料範圍：' + escapeHtml(metadata.range.year) + ' 全年度</p>'
-        : (recommendationContext?.rangeType === 'year' && metadata?.range_error
+        : ((recommendationContext?.rangeType === 'year' || recommendationContext?.rangeType === 'holiday') && metadata?.range_error
           ? '<p class="mp-data-limit">' + escapeHtml(metadata.range_error) + '，以下改用既有預設資料。</p>'
           : '');
 
@@ -1483,13 +1615,13 @@ function renderStationDetailPage(stationId: string): string {
           </article>
           <article class="mp-evidence-block" aria-labelledby="flow-heading">
             <h3 id="flow-heading">主要人流連結</h3>
-            <p>\${metadata?.range_type === 'year' ? '連結值來自 ' + escapeHtml(metadata.range.year) + ' 全年度 range_od_flow（同一年度聚合流量換算的相對占比）' : '連結值來自既有 transition_matrix；月份未由此 API 提供'}。「本站出發」優先顯示下午資料（若無則顯示第一個可用時段）；「流入本站」則讓每個來源站取跨時段最大值，兩者不是同一範圍。百分比是既有矩陣連結值乘以 100 的顯示方式，未提供觀測來源證明，不能當成實際旅客比例。</p>
+            <p>\${metadata?.range_type === 'holiday' ? '連結值來自 ' + escapeHtml(metadata.range.year) + ' ' + escapeHtml(metadata.range.event_name || '') + '連假 range_od_flow（同一段連假聚合流量換算的相對占比）' : metadata?.range_type === 'year' ? '連結值來自 ' + escapeHtml(metadata.range.year) + ' 全年度 range_od_flow（同一年度聚合流量換算的相對占比）' : '連結值來自既有 transition_matrix；月份未由此 API 提供'}。「本站出發」優先顯示下午資料（若無則顯示第一個可用時段）；「流入本站」則讓每個來源站取跨時段最大值，兩者不是同一範圍。百分比是既有矩陣連結值乘以 100 的顯示方式，未提供觀測來源證明，不能當成實際旅客比例。</p>
             <div class="mp-flow-columns">
               <section aria-labelledby="outbound-heading"><h4 id="outbound-heading">本站 → 目的地</h4><div id="outbound-list" class="mp-flow-list"></div></section>
               <section aria-labelledby="inbound-heading"><h4 id="inbound-heading">來源站 → 本站</h4><div id="inbound-list" class="mp-flow-list"></div></section>
             </div>
           </article>
-          <p class="mp-data-limit">詳情頁目前使用 \${escapeHtml(metadata?.pagerank_source || '既有 PageRank 資料')} 與 \${escapeHtml(metadata?.connection_source || '既有連結資料')}\${metadata?.range_type === 'year' ? '（' + escapeHtml(metadata.range.year) + ' 全年度）' : '；月份 provenance 未提供，不能視為首頁 real metadata 的逐欄證明'}。</p>
+          <p class="mp-data-limit">詳情頁目前使用 \${escapeHtml(metadata?.pagerank_source || '既有 PageRank 資料')} 與 \${escapeHtml(metadata?.connection_source || '既有連結資料')}\${metadata?.range_type === 'holiday' ? '（' + escapeHtml(metadata.range.year) + ' ' + escapeHtml(metadata.range.event_name || '') + '連假）' : metadata?.range_type === 'year' ? '（' + escapeHtml(metadata.range.year) + ' 全年度）' : '；月份 provenance 未提供，不能視為首頁 real metadata 的逐欄證明'}。</p>
         </section>
       \`;
 
@@ -1717,10 +1849,14 @@ ${htmlNav('analytics', 'light')}
       <select id="sel-range-mode" class="mp-control mp-range-mode-select">
         <option value="month">月份</option>
         <option value="year">年度</option>
+        <option value="holiday">連假</option>
       </select>
       <select id="sel-month" class="mp-control"></select>
       <select id="sel-year" class="mp-control" hidden></select>
       <p id="sel-year-unavailable" class="mp-control-help" hidden>目前沒有完整年度資料可用，請改用月份。</p>
+      <select id="sel-holiday-event" class="mp-control" hidden></select>
+      <select id="sel-holiday-year" class="mp-control" hidden></select>
+      <p id="sel-holiday-unavailable" class="mp-control-help" hidden>目前沒有完整連假資料可用，請改用月份或年度。</p>
     </div>
     <div>
       <label for="sel-period">時段</label>
@@ -1755,6 +1891,7 @@ ${htmlNav('analytics', 'light')}
     <button id="tab-btn-ranking" type="button" role="tab" aria-selected="true" aria-controls="tab-ranking" tabindex="0" class="tab-btn active" data-tab="ranking">${iconUse('ranking', 18, 'mp-tab-icon')}<span class="mp-tab-label">站點排名</span></button>
     <button id="tab-btn-chart" type="button" role="tab" aria-selected="false" aria-controls="tab-chart" tabindex="-1" class="tab-btn" data-tab="chart">${iconUse('chart', 18, 'mp-tab-icon')}<span class="mp-tab-label">圖表比較</span></button>
     <button id="tab-btn-trend" type="button" role="tab" aria-selected="false" aria-controls="tab-trend" tabindex="-1" class="tab-btn" data-tab="trend">${iconUse('calendar', 18, 'mp-tab-icon')}<span class="mp-tab-label">月份資料</span></button>
+    <button id="tab-btn-holiday-compare" type="button" role="tab" aria-selected="false" aria-controls="tab-holiday-compare" tabindex="-1" class="tab-btn" data-tab="holiday-compare">${iconUse('chart', 18, 'mp-tab-icon')}<span class="mp-tab-label">連假比較</span></button>
   </div>
 
   <!-- 排名表 Tab -->
@@ -1816,6 +1953,64 @@ ${htmlNav('analytics', 'light')}
     </section>
   </div>
 
+  <!-- 連假比較 Tab -->
+  <div id="tab-holiday-compare" role="tabpanel" aria-labelledby="tab-btn-holiday-compare" tabindex="0" hidden>
+    <section class="mp-analytics-panel" aria-labelledby="holiday-compare-heading">
+      <h2 id="holiday-compare-heading">歷年同連假比較</h2>
+      <p id="holiday-compare-intro">依 event_key 對齊同一個連假（例如春節）跨年份的資料，不是依固定國曆日期；只比較已完整計算的年份，不完整或尚未計算的年份會明確標示原因，不會以 0 呈現。</p>
+      <div class="mp-trend-controls">
+        <div>
+          <label for="compare-event">連假</label>
+          <select id="compare-event" class="mp-control"></select>
+        </div>
+        <div>
+          <label for="compare-station">站點</label>
+          <input id="compare-station" class="mp-control" type="text" list="trend-stations" placeholder="輸入站碼或選擇站點" autocomplete="off" aria-describedby="compare-station-help compare-msg">
+        </div>
+        <div>
+          <label for="compare-period">時段</label>
+          <select id="compare-period" class="mp-control">
+            <option value="morning_peak">晨峰 07:00–09:00</option>
+            <option value="morning">上午 09:00–12:00</option>
+            <option value="noon">午間 12:00–14:00</option>
+            <option value="afternoon">下午 14:00–17:00</option>
+            <option value="evening_peak">晚峰 17:00–19:00</option>
+            <option value="night">夜間 19:00–23:00</option>
+          </select>
+        </div>
+        <button type="button" id="btn-compare" class="mp-btn-primary">比較這個連假</button>
+      </div>
+      <p id="compare-station-help" class="mp-control-help">建議選擇明確站碼，避免同名轉乘站混淆。</p>
+      <div id="compare-msg" class="mp-page-state" role="status" aria-live="polite">選擇連假與站點後查看歷年比較。</div>
+      <button type="button" id="compare-retry" class="mp-btn-secondary" hidden>${iconUse('refresh')}<span>重試比較</span></button>
+      <div id="compare-results" hidden>
+        <p id="compare-unavailable-note" class="mp-data-limit" hidden></p>
+        <div class="mp-analytics-chart" id="compare-pr-chart-wrap">
+          <h3 class="mp-compare-chart-title">PageRank（依年份，非連續趨勢）</h3>
+          <canvas id="compare-pr-chart" role="img" aria-label="所選站點各年份連假 PageRank 類別比較長條圖"></canvas>
+        </div>
+        <div class="mp-analytics-chart" id="compare-flow-chart-wrap">
+          <h3 class="mp-compare-chart-title">平均每日人流（總量 ÷ 天數，依年份）</h3>
+          <canvas id="compare-flow-chart" role="img" aria-label="所選站點各年份連假平均每日人流類別比較長條圖"></canvas>
+        </div>
+        <p class="mp-data-limit">兩張圖都是各年份獨立的類別比較（bar），不是連續時間趨勢線——連假實例之間本來就不等距。平均每日人流＝連假期間總流量 ÷ 天數，用來讓天數不同的年份可以公平比較；原始總量與天數仍列在下方表格，不隱藏期間差異。</p>
+        <div class="mp-table-scroll">
+          <table class="mp-data-table">
+            <caption>歷年連假比較資料</caption>
+            <thead><tr>
+              <th scope="col">年份</th><th scope="col">連假日期</th><th scope="col">天數</th>
+              <th scope="col">PageRank</th><th scope="col">排名</th>
+              <th scope="col">出發總量</th><th scope="col">平均每日出發</th>
+              <th scope="col">抵達總量</th><th scope="col">平均每日抵達</th>
+              <th scope="col">狀態</th>
+            </tr></thead>
+            <tbody id="compare-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <section class="mp-analytics-definition" aria-labelledby="definition-heading">
     <h2 id="definition-heading">資料定義與限制</h2>
     <dl><div><dt>資料來源</dt><dd>已匯入的台北捷運月度 OD 資料與其 PageRank 計算結果。</dd></div><div><dt>PageRank</dt><dd>站點在指定月份與時段的路網相對重要性，不是即時人潮或擁擠度。</dd></div><div><dt>缺值</dt><dd>資料缺少不等於觀測值為 0；本頁不推測未由 API 提供的欄位 provenance。</dd></div></dl>
@@ -1830,12 +2025,17 @@ const ANALYTICS_PERIODS = {
 };
 let barChart = null;
 let trendChart = null;
+let comparePrChart = null;
+let compareFlowChart = null;
 let currentData = [];
+let currentCompareYears = [];
 let availableMonths = [];
 let availableYears = [];
+let availableHolidayEvents = [];
 let stations = [];
 let rankingRequest = null;
 let trendRequest = null;
+let compareRequest = null;
 let initRequest = null;
 
 function escapeHtml(value) {
@@ -1907,6 +2107,22 @@ function clearTrend(message) {
   document.getElementById('trend-station').removeAttribute('aria-invalid');
 }
 
+function clearCompare(message) {
+  const previous = compareRequest;
+  compareRequest = null;
+  previous?.abort();
+  currentCompareYears = [];
+  if (comparePrChart) { comparePrChart.destroy(); comparePrChart = null; }
+  if (compareFlowChart) { compareFlowChart.destroy(); compareFlowChart = null; }
+  document.getElementById('compare-results').hidden = true;
+  document.getElementById('compare-unavailable-note').hidden = true;
+  document.getElementById('compare-rows').replaceChildren();
+  document.getElementById('compare-retry').hidden = true;
+  document.getElementById('compare-msg').textContent = message;
+  document.getElementById('btn-compare').disabled = false;
+  document.getElementById('compare-station').removeAttribute('aria-invalid');
+}
+
 // ── 初始化 ──────────────────────────────────────────
 async function init() {
   if (initRequest) return;
@@ -1914,20 +2130,24 @@ async function init() {
   initRequest = request;
   const selectedMonth = document.getElementById('sel-month').value;
   const selectedYear = document.getElementById('sel-year').value;
+  const selectedHolidayEvent = document.getElementById('sel-holiday-event').value;
+  const selectedHolidayYear = document.getElementById('sel-holiday-year').value;
   const selectedRangeMode = document.getElementById('sel-range-mode').value;
   document.getElementById('retry-init').disabled = true;
   document.getElementById('no-data-banner').hidden = true;
   clearRanking('正在取得可用月份…');
   clearTrend('選擇站點後查看月份資料。');
   try {
-    const [monthData, yearData, stationData] = await Promise.all([
+    const [monthData, yearData, holidayData, stationData] = await Promise.all([
       fetchJson('/api/analytics/months', request.signal),
       fetchJson('/api/analytics/years', request.signal).catch(() => ({ years: [] })),
+      fetchJson('/api/analytics/holidays', request.signal).catch(() => ({ events: [] })),
       fetchJson('/api/stations', request.signal).catch(() => ({ stations: [] }))
     ]);
     if (initRequest !== request) return;
     availableMonths = Array.isArray(monthData.months) ? monthData.months : [];
     availableYears = Array.isArray(yearData.years) ? yearData.years : [];
+    availableHolidayEvents = Array.isArray(holidayData.events) ? holidayData.events : [];
     stations = Array.isArray(stationData.stations) ? stationData.stations : [];
     const monthSelect = document.getElementById('sel-month');
     monthSelect.replaceChildren();
@@ -1951,8 +2171,39 @@ async function init() {
     if (hasYears && Array.from(yearSelect.options).some(option => option.value === selectedYear)) yearSelect.value = selectedYear;
     document.getElementById('sel-year-unavailable').hidden = hasYears;
     yearSelect.hidden = !hasYears || document.getElementById('sel-range-mode').value !== 'year';
-    // 沒有完整年度資料時，範圍模式維持在月份，不讓使用者卡在一個必然失敗的年度查詢。
+
+    const eventSelect = document.getElementById('sel-holiday-event');
+    eventSelect.replaceChildren();
+    availableHolidayEvents.forEach(ev => {
+      const option = document.createElement('option');
+      option.value = ev.event_key;
+      option.textContent = ev.name_zh;
+      eventSelect.appendChild(option);
+    });
+    const hasHolidayEvents = availableHolidayEvents.length > 0;
+    if (hasHolidayEvents && Array.from(eventSelect.options).some(option => option.value === selectedHolidayEvent)) eventSelect.value = selectedHolidayEvent;
+    populateHolidayYearSelect(selectedHolidayYear);
+    document.getElementById('sel-holiday-unavailable').hidden = hasHolidayEvents;
+
+    // 連假比較 tab 的 event 選單：只列出至少有一個完整年度的 event_key（沒有完整年度就沒有
+    // 任何東西可比較），選項一律來自 API，不 hardcode。
+    const compareEventSelect = document.getElementById('compare-event');
+    const previousCompareEvent = compareEventSelect.value;
+    compareEventSelect.replaceChildren();
+    availableHolidayEvents.forEach(ev => {
+      const option = document.createElement('option');
+      option.value = ev.event_key;
+      option.textContent = ev.name_zh;
+      compareEventSelect.appendChild(option);
+    });
+    if (hasHolidayEvents && Array.from(compareEventSelect.options).some(o => o.value === previousCompareEvent)) {
+      compareEventSelect.value = previousCompareEvent;
+    }
+    document.getElementById('btn-compare').disabled = !hasHolidayEvents;
+
+    // 沒有完整年度／連假資料時，範圍模式維持在月份，不讓使用者卡在一個必然失敗的查詢。
     if (!hasYears && selectedRangeMode === 'year') document.getElementById('sel-range-mode').value = 'month';
+    if (!hasHolidayEvents && selectedRangeMode === 'holiday') document.getElementById('sel-range-mode').value = 'month';
     applyRangeModeVisibility();
 
     document.getElementById('trend-stations').innerHTML = stations.map(station => '<option value="' + escapeHtml(station.id) + '" label="' + escapeHtml(station.name_zh) + '"></option>').join('');
@@ -1979,14 +2230,34 @@ async function init() {
 function applyRangeModeVisibility() {
   const mode = document.getElementById('sel-range-mode').value;
   const hasYears = availableYears.length > 0;
+  const hasHolidayEvents = availableHolidayEvents.length > 0;
   document.getElementById('sel-month').hidden = mode !== 'month';
   document.getElementById('sel-year').hidden = mode !== 'year' || !hasYears;
   document.getElementById('sel-year-unavailable').hidden = mode !== 'year' || hasYears;
+  document.getElementById('sel-holiday-event').hidden = mode !== 'holiday' || !hasHolidayEvents;
+  document.getElementById('sel-holiday-year').hidden = mode !== 'holiday' || !hasHolidayEvents;
+  document.getElementById('sel-holiday-unavailable').hidden = mode !== 'holiday' || hasHolidayEvents;
+}
+
+// 年份選項依目前選中的 event 過濾；preferredYear 是想沿用的既有選擇（若仍存在於新 event 底下）。
+function populateHolidayYearSelect(preferredYear) {
+  const eventKey = document.getElementById('sel-holiday-event').value;
+  const yearSelect = document.getElementById('sel-holiday-year');
+  yearSelect.replaceChildren();
+  const event = availableHolidayEvents.find(ev => ev.event_key === eventKey);
+  const years = event ? event.years : [];
+  years.forEach(y => {
+    const option = document.createElement('option');
+    option.value = String(y.year);
+    option.textContent = y.label || (y.year + '年');
+    yearSelect.appendChild(option);
+  });
+  if (years.some(y => String(y.year) === preferredYear)) yearSelect.value = preferredYear;
 }
 
 // ── Tab 切換 ─────────────────────────────────────────
 function switchTab(name, btn) {
-  ['ranking','chart','trend'].forEach(t => {
+  ['ranking','chart','trend','holiday-compare'].forEach(t => {
     document.getElementById('tab-'+t).hidden = t !== name;
   });
   document.querySelectorAll('.tab-btn').forEach(b => {
@@ -1998,11 +2269,18 @@ function switchTab(name, btn) {
   btn.setAttribute('aria-selected', 'true');
   btn.tabIndex = 0;
   if (name === 'chart' && currentData.length > 0) renderBarChart(currentData);
+  // Chart.js 在 hidden 的 tabpanel 裡建圖表會拿到 0 尺寸的 canvas；切回這個 tab 時用快取的
+  // 資料重畫一次，不重新打 API。
+  if (name === 'holiday-compare' && currentCompareYears.length > 0) renderCompareCharts(currentCompareYears);
 }
 
 function configureAnalyticsEvents() {
-  ['sel-month', 'sel-year', 'sel-period', 'sel-topn'].forEach(id => {
+  ['sel-month', 'sel-year', 'sel-holiday-year', 'sel-period', 'sel-topn'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => clearRanking('條件已變更，請按「更新分析」查看資料。'));
+  });
+  document.getElementById('sel-holiday-event').addEventListener('change', () => {
+    populateHolidayYearSelect('');
+    clearRanking('條件已變更，請按「更新分析」查看資料。');
   });
   document.getElementById('sel-range-mode').addEventListener('change', () => {
     applyRangeModeVisibility();
@@ -2014,6 +2292,11 @@ function configureAnalyticsEvents() {
   document.getElementById('rank-retry').addEventListener('click', loadRanking);
   document.getElementById('btn-trend').addEventListener('click', loadTrend);
   document.getElementById('trend-retry').addEventListener('click', loadTrend);
+  document.getElementById('compare-event').addEventListener('change', () => clearCompare('連假已變更，請重新查看歷年比較。'));
+  document.getElementById('compare-station').addEventListener('input', () => clearCompare('站點已變更，請重新查看歷年比較。'));
+  document.getElementById('compare-period').addEventListener('change', () => clearCompare('時段已變更，請重新查看歷年比較。'));
+  document.getElementById('btn-compare').addEventListener('click', loadHolidayComparison);
+  document.getElementById('compare-retry').addEventListener('click', loadHolidayComparison);
   document.getElementById('retry-init').addEventListener('click', init);
   const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
   tabs.forEach((tab, index) => {
@@ -2036,7 +2319,15 @@ async function loadRanking() {
   const topN = document.getElementById('sel-topn').value;
 
   let apiParams, scope, scopeLabel;
-  if (rangeMode === 'year') {
+  if (rangeMode === 'holiday') {
+    const eventKeyVal = document.getElementById('sel-holiday-event').value;
+    const yearVal = document.getElementById('sel-holiday-year').value;
+    if (!eventKeyVal || !yearVal) return;
+    const event = availableHolidayEvents.find(ev => ev.event_key === eventKeyVal);
+    const yearEntry = event && event.years.find(y => String(y.year) === yearVal);
+    scopeLabel = yearVal + '年' + (event ? event.name_zh : eventKeyVal) + (yearEntry && yearEntry.start_date && yearEntry.end_date ? '（' + yearEntry.start_date + ' ～ ' + yearEntry.end_date + '）' : '');
+    apiParams = new URLSearchParams({ range_type: 'holiday', event_key: eventKeyVal, year: yearVal, period, top_n: topN });
+  } else if (rangeMode === 'year') {
     const yearVal = document.getElementById('sel-year').value;
     if (!yearVal) return;
     scopeLabel = yearVal + '年（全年）';
@@ -2060,7 +2351,7 @@ async function loadRanking() {
     // 範圍描述一律用送出時已確認可用的值組出（API 成功回應才會走到這裡），
     // 與 rangeMode 一致，不會顯示與實際查詢不同的範圍。
     document.getElementById('rank-subtitle').textContent = scope;
-    const sourceLabel = rangeMode === 'year' ? '真實年度資料' : '真實月度資料';
+    const sourceLabel = rangeMode === 'holiday' ? '真實連假資料' : rangeMode === 'year' ? '真實年度資料' : '真實月度資料';
     document.getElementById('current-data-summary').textContent = sourceLabel + ' · ' + scope + '。PageRank 表示指定範圍內的路網相對重要性。';
     if (!currentData.length) {
       document.getElementById('rank-loading').textContent = '這組範圍與時段目前沒有排名資料。請保留條件並改選其他範圍。';
@@ -2225,6 +2516,164 @@ async function loadTrend() {
       trendRequest = null;
     }
   }
+}
+
+// ── 歷年連假比較（Phase 3B.1）──────────────────────────
+const COMPARE_STATUS_LABELS = {
+  complete: '完整',
+  incomplete: '不完整',
+  not_materialized: '尚未計算',
+  unavailable: '此站無資料',
+};
+
+async function loadHolidayComparison() {
+  clearCompare('正在檢查站點與時段…');
+  const eventKey = document.getElementById('compare-event').value;
+  if (!eventKey) {
+    document.getElementById('compare-msg').textContent = '目前沒有可比較的連假；請先確認有已完整計算的連假資料。';
+    return;
+  }
+  const rawStation = document.getElementById('compare-station').value.trim();
+  const directId = rawStation.toUpperCase();
+  const stationById = stations.find(station => station.id === directId);
+  const nameMatches = stations.filter(station => station.name_zh === rawStation || (station.name_en || '').toLowerCase() === rawStation.toLowerCase());
+  if (!stationById && nameMatches.length > 1) {
+    document.getElementById('compare-msg').textContent = '這個站名對應多個站碼，請從建議中選擇明確站碼。';
+    document.getElementById('compare-station').setAttribute('aria-invalid', 'true');
+    document.getElementById('compare-station').focus();
+    return;
+  }
+  const exactStation = stationById || nameMatches[0];
+  const sid = exactStation?.id || directId;
+  const period = document.getElementById('compare-period').value;
+  if (!sid || !/^[A-Z]+\\d{1,2}[A-Z]?$/.test(sid)) {
+    document.getElementById('compare-msg').textContent = '請從建議中選擇站點，或輸入完整站碼。';
+    document.getElementById('compare-station').setAttribute('aria-invalid', 'true');
+    document.getElementById('compare-station').focus();
+    return;
+  }
+  document.getElementById('compare-station').value = sid;
+  const stationName = exactStation?.name_zh ? exactStation.name_zh + ' ' + sid : sid;
+
+  const request = new AbortController();
+  compareRequest = request;
+  document.getElementById('btn-compare').disabled = true;
+  document.getElementById('compare-msg').textContent = '載入中…';
+  try {
+    const json = await fetchJson('/api/analytics/holiday-comparison?' + new URLSearchParams({ event_key: eventKey, period, station: sid }).toString(), request.signal);
+    if (compareRequest !== request) return;
+    const years = Array.isArray(json.years) ? json.years : [];
+    if (!years.length) {
+      document.getElementById('compare-msg').textContent = '這個連假目前沒有任何已登錄的年份。';
+      return;
+    }
+    currentCompareYears = years;
+    const completeYears = years.filter(y => y.status === 'complete');
+    const omittedYears = years.filter(y => y.status !== 'complete');
+    document.getElementById('compare-msg').textContent = stationName + ' · ' + (json.event?.name_zh || eventKey) + ' · ' + ANALYTICS_PERIODS[period] + ' · 共 ' + years.length + ' 個已登錄年份，' + completeYears.length + ' 個完整可比較。';
+    document.getElementById('compare-results').hidden = false;
+    if (omittedYears.length) {
+      const note = document.getElementById('compare-unavailable-note');
+      note.hidden = false;
+      note.textContent = omittedYears.length + ' 個年份未列入圖表比較（' + omittedYears.map(y => y.year + '年：' + (COMPARE_STATUS_LABELS[y.status] || y.status) + (y.reason ? '，' + y.reason : '')).join('；') + '）。不以 0 呈現，下方表格仍列出這些年份的登錄狀態。';
+    }
+    renderCompareTable(years, stationName);
+    renderCompareCharts(years);
+  } catch (error) {
+    if (compareRequest !== request) return;
+    document.getElementById('compare-msg').textContent = '歷年比較載入失敗；條件已保留，請重試。';
+    document.getElementById('compare-retry').hidden = false;
+  } finally {
+    if (compareRequest === request) {
+      document.getElementById('btn-compare').disabled = false;
+      compareRequest = null;
+    }
+  }
+}
+
+function renderCompareTable(years, stationName) {
+  document.getElementById('compare-rows').innerHTML = years.map(y => {
+    const dateRange = y.start_date && y.end_date ? y.start_date + ' ～ ' + y.end_date : '未知';
+    const dayCount = y.day_count != null ? y.day_count + (y.expected_day_count != null ? '/' + y.expected_day_count : '') + ' 天' : '資料不足';
+    const pr = y.pagerank && Number.isFinite(y.pagerank.pr_value) ? y.pagerank.pr_value.toFixed(6) : '資料不足';
+    const rank = y.pagerank && y.pagerank.pr_rank != null ? '#' + escapeHtml(y.pagerank.pr_rank) : '資料不足';
+    const outTotal = y.flow && Number.isFinite(y.flow.outbound_total) ? y.flow.outbound_total.toLocaleString('zh-TW') : '資料不足';
+    const outAvg = y.flow && Number.isFinite(y.flow.outbound_avg_daily) ? y.flow.outbound_avg_daily.toFixed(1) : '資料不足';
+    const inTotal = y.flow && Number.isFinite(y.flow.inbound_total) ? y.flow.inbound_total.toLocaleString('zh-TW') : '資料不足';
+    const inAvg = y.flow && Number.isFinite(y.flow.inbound_avg_daily) ? y.flow.inbound_avg_daily.toFixed(1) : '資料不足';
+    const statusLabel = COMPARE_STATUS_LABELS[y.status] || y.status;
+    const statusCell = y.status === 'complete' ? statusLabel : statusLabel + (y.reason ? '：' + escapeHtml(y.reason) : '');
+    return '<tr' + (y.status === 'complete' ? '' : ' class="mp-trend-missing"') + '>' +
+      '<th scope="row">' + escapeHtml(y.year) + '年</th>' +
+      '<td>' + escapeHtml(dateRange) + '</td>' +
+      '<td>' + escapeHtml(dayCount) + '</td>' +
+      '<td>' + pr + '</td>' +
+      '<td>' + rank + '</td>' +
+      '<td>' + outTotal + '</td>' +
+      '<td>' + outAvg + '</td>' +
+      '<td>' + inTotal + '</td>' +
+      '<td>' + inAvg + '</td>' +
+      '<td>' + statusCell + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderCompareCharts(years) {
+  if (typeof Chart === 'undefined') return;
+  const completeYears = years.filter(y => y.status === 'complete').sort((a, b) => a.year - b.year);
+  const colors = chartTokens();
+  const labels = completeYears.map(y => y.year + '年');
+
+  if (comparePrChart) { comparePrChart.destroy(); comparePrChart = null; }
+  if (compareFlowChart) { compareFlowChart.destroy(); compareFlowChart = null; }
+  if (!completeYears.length) return;
+
+  // 類別比較（bar），不是連續趨勢線——每個年份是獨立觀察值，年份之間不代表等距時間推進。
+  comparePrChart = new Chart(document.getElementById('compare-pr-chart'), {
+    type: 'bar',
+    data: { labels, datasets: [{
+      label: 'PageRank',
+      data: completeYears.map(y => y.pagerank && Number.isFinite(y.pagerank.pr_value) ? y.pagerank.pr_value : null),
+      backgroundColor: colors.ink, borderRadius: 0, maxBarThickness: 56,
+    }] },
+    options: {
+      animation: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 160 },
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        afterLabel: ctx => {
+          const y = completeYears[ctx.dataIndex];
+          return y?.pagerank?.pr_rank != null ? '排名 #' + y.pagerank.pr_rank : '';
+        }
+      } } },
+      scales: {
+        x: { ticks: { color: colors.muted }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: colors.muted }, grid: { color: colors.border }, title: { display: true, text: 'PageRank', color: colors.muted } }
+      }
+    }
+  });
+
+  const flowColors = { outbound: colors.ink, inbound: getComputedStyle(document.documentElement).getPropertyValue('--mp-score-flow').trim() || colors.muted };
+  compareFlowChart = new Chart(document.getElementById('compare-flow-chart'), {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label: '平均每日出發', data: completeYears.map(y => y.flow && Number.isFinite(y.flow.outbound_avg_daily) ? y.flow.outbound_avg_daily : null), backgroundColor: flowColors.outbound, borderRadius: 0, maxBarThickness: 28 },
+      { label: '平均每日抵達', data: completeYears.map(y => y.flow && Number.isFinite(y.flow.inbound_avg_daily) ? y.flow.inbound_avg_daily : null), backgroundColor: flowColors.inbound, borderRadius: 0, maxBarThickness: 28 },
+    ] },
+    options: {
+      animation: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? false : { duration: 160 },
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { color: colors.muted } }, tooltip: { callbacks: {
+        afterLabel: ctx => {
+          const y = completeYears[ctx.dataIndex];
+          return y ? '天數：' + y.day_count + '（總量 ÷ 天數＝平均每日）' : '';
+        }
+      } } },
+      scales: {
+        x: { ticks: { color: colors.muted }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: colors.muted }, grid: { color: colors.border }, title: { display: true, text: '平均每日流量', color: colors.muted } }
+      }
+    }
+  });
 }
 
 configureAnalyticsEvents();

@@ -18,6 +18,7 @@ import {
   RealOdFlowRow,
   DateRange,
   RangePageRankRow,
+  HolidayEvent,
 } from '../lib/types';
 
 // ============================================================
@@ -431,6 +432,52 @@ export async function getCompleteYearRanges(db: D1Database): Promise<DateRange[]
   const result = await db.prepare(
     `SELECT * FROM date_ranges WHERE range_type = 'year' AND is_complete = 1 ORDER BY range_id DESC`
   ).all<DateRange>();
+  return result.results ?? [];
+}
+
+/** 取得單一連假事件 metadata（(event_key, year) 唯一）；不存在回傳 null。 */
+export async function getHolidayEvent(db: D1Database, eventKey: string, year: number): Promise<HolidayEvent | null> {
+  const result = await db.prepare(
+    `SELECT * FROM holiday_events WHERE event_key = ? AND year = ?`
+  ).bind(eventKey, year).first<HolidayEvent>();
+  return result ?? null;
+}
+
+/**
+ * 取得某個 event_key 底下「所有」已登錄年份（Phase 3B.1 歷年比較用），依年份新到舊排序。
+ * 刻意不過濾 is_complete——比較頁需要能明確標示「已登錄但不完整／尚未計算」的年份，
+ * 不能只看到完整年份而讓使用者誤以為那個年份不存在。
+ */
+export async function getHolidayEventsByKey(db: D1Database, eventKey: string): Promise<HolidayEvent[]> {
+  const result = await db.prepare(
+    `SELECT * FROM holiday_events WHERE event_key = ? ORDER BY year DESC`
+  ).bind(eventKey).all<HolidayEvent>();
+  return result.results ?? [];
+}
+
+/**
+ * 取得所有「完整」連假 range（is_complete=1），並帶出 holiday_events 的 event_key/年份/名稱，
+ * 依 event_key、年份新到舊排序——供首頁「連假」選單與 /api/analytics/holidays 依 event 分組使用。
+ * 只回傳完整連假：不完整的連假即使已登錄 holiday_events、已嘗試 materialize，也不該被當成
+ * 使用者可選的選項（沒有對應的 range_pagerank 可用）。
+ *
+ * 用 holiday_events.start_date/end_date 與 date_ranges 的實際範圍做 JOIN，而不是去解析
+ * range_id 字串（event_key 本身可能含連字號，但不會含冒號，理論上可以解析，但用日期 JOIN
+ * 更直接、也順便驗證了兩邊資料一致）。
+ */
+export async function getCompleteHolidayRanges(
+  db: D1Database
+): Promise<(DateRange & { event_key: string; year: number; name_zh: string })[]> {
+  const result = await db.prepare(
+    `SELECT d.*, h.event_key as event_key, h.year as year, h.name_zh as name_zh
+     FROM date_ranges d
+     JOIN holiday_events h
+       ON h.event_key = d.holiday_event_id
+      AND h.start_date = d.start_date
+      AND h.end_date = d.end_date
+     WHERE d.range_type = 'holiday' AND d.is_complete = 1
+     ORDER BY h.event_key ASC, h.year DESC`
+  ).all<DateRange & { event_key: string; year: number; name_zh: string }>();
   return result.results ?? [];
 }
 

@@ -905,6 +905,208 @@ def generate_manifest(
     }
 
 
+# ============================================================
+# Phase 3B — generalized range coverage / aggregate 共用邏輯
+# ============================================================
+# Month／Year／Holiday 共用同一套「聚合 OD → 建 transition matrix → PageRank」管線
+# （見 docs/data/temporal-architecture-design.md）。以下三個函式是這套管線裡與「range 是
+# 一段日期區間」相關的共用部分，只依賴 start_date/end_date，不知道呼叫端是年度還是連假——
+# Phase 3A.1 原本把這套邏輯寫死在 materialize_year_range.py 裡，Phase 3B 把它搬到這裡，
+# 讓新的 materialize_holiday_range.py 呼叫同一份、已經被 2027/2029 fixture 驗證過的邏輯，
+# 不是重新寫一份容易走樣的複製品。
+
+PERIOD_SET = set(PERIODS)
+
+
+def compute_service_date_period_coverage(
+    start_date: str,
+    end_date: str,
+    expected_day_count: int,
+    project_root: str,
+    db_name: str,
+    remote: bool,
+) -> dict:
+    """通用 service_date × period 完整性檢查（year/holiday/custom 共用，不含 range 專屬欄位）。
+
+    一個日期區間被視為「完整」，若且唯若：
+      1. daily_od_flow 對 [start_date, end_date] 的每一天都至少有一列資料。
+      2. 每個有資料的日期，六個既有 period 都必須各至少一列——只看 distinct 日期數會漏掉
+         「某天只匯入 5 個 period」的情況。
+    不要求同一天每個 OD pair 都存在，也不對缺的 period 補 0。
+    """
+    row = _d1_json_query(
+        f"SELECT MIN(service_date) as min_date, MAX(service_date) as max_date, "
+        f"COUNT(DISTINCT service_date) as distinct_dates "
+        f"FROM daily_od_flow WHERE service_date BETWEEN '{start_date}' AND '{end_date}'",
+        project_root, db_name, remote,
+    )[0]
+    distinct_dates = row['distinct_dates'] or 0
+
+    incomplete_rows = _d1_json_query(
+        f"SELECT service_date, GROUP_CONCAT(DISTINCT period) as periods_present, "
+        f"COUNT(DISTINCT period) as period_count FROM daily_od_flow "
+        f"WHERE service_date BETWEEN '{start_date}' AND '{end_date}' "
+        f"GROUP BY service_date HAVING period_count <> {len(PERIODS)} "
+        f"ORDER BY service_date LIMIT 50",
+        project_root, db_name, remote,
+    )
+    incomplete_period_days = []
+    for r in incomplete_rows:
+        present = set((r['periods_present'] or '').split(','))
+        missing = sorted(PERIOD_SET - present)
+        incomplete_period_days.append({
+            'service_date': r['service_date'],
+            'periods_present': sorted(present),
+            'missing_periods': missing,
+        })
+    count_row = _d1_json_query(
+        f"SELECT COUNT(*) as n FROM (SELECT service_date FROM daily_od_flow "
+        f"WHERE service_date BETWEEN '{start_date}' AND '{end_date}' "
+        f"GROUP BY service_date HAVING COUNT(DISTINCT period) <> {len(PERIODS)})",
+        project_root, db_name, remote,
+    )[0]
+    incomplete_period_day_count = count_row['n'] or 0
+
+    is_complete = (
+        distinct_dates == expected_day_count
+        and row['min_date'] == start_date
+        and row['max_date'] == end_date
+        and incomplete_period_day_count == 0
+    )
+    coverage = {
+        'start_date': start_date,
+        'end_date': end_date,
+        'expected_day_count': expected_day_count,
+        'actual_day_count': distinct_dates,
+        'actual_min_date': row['min_date'],
+        'actual_max_date': row['max_date'],
+        'expected_period_count': len(PERIODS),
+        'incomplete_period_day_count': incomplete_period_day_count,
+        'incomplete_period_days_sample': incomplete_period_days,
+        'is_complete': is_complete,
+    }
+    coverage['coverage_note'] = build_coverage_note(coverage)
+    return coverage
+
+
+def build_coverage_note(coverage: dict) -> str | None:
+    """把不完整的原因寫成一句可讀說明；完整 range 回傳 None（不寫欄位，不是空字串）。"""
+    if coverage['is_complete']:
+        return None
+    reasons = []
+    if (coverage['actual_day_count'] != coverage['expected_day_count']
+            or coverage['actual_min_date'] != coverage['start_date']
+            or coverage['actual_max_date'] != coverage['end_date']):
+        reasons.append(
+            f"僅涵蓋 {coverage['actual_day_count']}/{coverage['expected_day_count']} 天"
+            f"（{coverage['actual_min_date'] or '無資料'} ~ {coverage['actual_max_date'] or '無資料'}）"
+        )
+    if coverage['incomplete_period_day_count'] > 0:
+        sample = coverage['incomplete_period_days_sample'][0] if coverage['incomplete_period_days_sample'] else None
+        example = f"，例如 {sample['service_date']} 缺少 {'、'.join(sample['missing_periods'])}" if sample else ''
+        reasons.append(f"{coverage['incomplete_period_day_count']} 天沒有完整六個時段的資料{example}")
+    note = '；'.join(reasons) if reasons else '完整性檢查未通過（原因不明，請檢查腳本邏輯）'
+    return note.replace("'", "''")  # 防禦性跳脫，避免文字內容意外含有單引號時破壞 SQL 字面值
+
+
+def fetch_range_od_aggregate(
+    start_date: str, end_date: str, project_root: str, db_name: str, remote: bool,
+) -> dict[str, dict[tuple[str, str], int]]:
+    """對已持久化的 daily_od_flow 執行真正的 SQL SUM...GROUP BY（不是 Python 端重算）。"""
+    rows = _d1_json_query(
+        f"SELECT from_station_id, to_station_id, period, SUM(flow_count) as total "
+        f"FROM daily_od_flow WHERE service_date BETWEEN '{start_date}' AND '{end_date}' "
+        f"GROUP BY from_station_id, to_station_id, period",
+        project_root, db_name, remote,
+    )
+    od_by_period: dict[str, dict[tuple[str, str], int]] = {p: defaultdict(int) for p in PERIODS}
+    for r in rows:
+        if r['period'] in od_by_period:
+            od_by_period[r['period']][(r['from_station_id'], r['to_station_id'])] = r['total']
+    return od_by_period
+
+
+def generate_range_materialization_sql(
+    coverage: dict,
+    od_by_period: dict,
+    station_ids: list[str],
+    range_id: str,
+    range_type: str,
+    label: str,
+    holiday_event_id: str | None = None,
+) -> tuple[str, dict]:
+    """通用 range materialization SQL 產生器：year/holiday 共用（custom 未來也可沿用）。
+
+    完整：寫入 date_ranges（is_complete=1）+ range_od_flow + range_pagerank。
+    不完整：只更新 date_ranges 狀態列，不寫入 range_od_flow/range_pagerank——不插值、
+    不假裝、不補 0，任何查詢路徑都不可能意外讀到一個用不完整資料算出來的 PageRank 結果。
+    """
+    ts = datetime.now().isoformat(timespec='seconds')
+    is_complete_flag = 1 if coverage['is_complete'] else 0
+    note = coverage.get('coverage_note')
+    note_sql = f"'{note}'" if note is not None else 'NULL'
+    holiday_event_sql = f"'{holiday_event_id}'" if holiday_event_id is not None else 'NULL'
+
+    lines = []
+    lines.append(f"-- date_ranges（range_type='{range_type}'，range_id={range_id}）")
+    lines.append(
+        "INSERT OR REPLACE INTO date_ranges "
+        "(range_id, range_type, start_date, end_date, holiday_event_id, label, day_count, computed_at, is_complete, expected_day_count, coverage_note) "
+        f"VALUES ('{range_id}', '{range_type}', '{coverage['start_date']}', '{coverage['end_date']}', {holiday_event_sql}, '{label}', "
+        f"{coverage['actual_day_count']}, '{ts}', {is_complete_flag}, {coverage['expected_day_count']}, {note_sql});"
+    )
+
+    od_count = 0
+    pr_count = 0
+    range_pr_by_period: dict[str, dict[str, tuple[float, int, float]]] = {}
+
+    if coverage['is_complete']:
+        lines.append(f"DELETE FROM range_od_flow WHERE range_id = '{range_id}';")
+        od_rows = []
+        for period in PERIODS:
+            for (from_id, to_id), flow in od_by_period[period].items():
+                if flow <= 0:
+                    continue
+                od_rows.append(f"('{range_id}', '{from_id}', '{to_id}', '{period}', {flow})")
+                od_count += 1
+        lines.extend(_batched_insert_lines(
+            'range_od_flow',
+            ['range_id', 'from_station_id', 'to_station_id', 'period', 'flow_count'],
+            od_rows,
+        ))
+
+        lines.append(f"DELETE FROM range_pagerank WHERE range_id = '{range_id}';")
+        pr_rows = []
+        for period in PERIODS:
+            od_flows = od_by_period[period]
+            print(f"  [range:{period}] 計算 PageRank（{len(od_flows)} OD 對，來源 {range_type} range daily_od_flow SQL 聚合）...", flush=True)
+            pr_raw = compute_pagerank(station_ids, od_flows)
+            pr_info = normalize_pr(pr_raw)
+            range_pr_by_period[period] = pr_info
+            for sid, (pr_val, rank, norm) in pr_info.items():
+                pr_rows.append(f"('{range_id}', '{sid}', '{period}', {pr_val:.8f}, {rank}, {norm:.6f})")
+                pr_count += 1
+        lines.extend(_batched_insert_lines(
+            'range_pagerank',
+            ['range_id', 'station_id', 'period', 'pr_value', 'pr_rank', 'normalized_score'],
+            pr_rows,
+        ))
+    else:
+        lines.append(
+            f"-- {range_type} range 資料不完整（{coverage['actual_day_count']}/{coverage['expected_day_count']} 天，"
+            f"{coverage['incomplete_period_day_count']} 天缺 period），只更新 date_ranges 狀態列，"
+            f"不寫入 range_od_flow/range_pagerank。"
+        )
+
+    lines.append("")
+    lines.append(f"-- range 處理完成：range_id={range_id}，is_complete={coverage['is_complete']}，{od_count} 筆 OD、{pr_count} 筆 PageRank")
+
+    return '\n'.join(lines), {
+        'range_id': range_id, 'od_count': od_count, 'pr_count': pr_count,
+        'range_pr_by_period': range_pr_by_period,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="MetroPulse OD Data Import — 下載台北捷運 OD 旅運量並匯入 D1"
