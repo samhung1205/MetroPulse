@@ -18,10 +18,25 @@ non-zero exit 的檢查。
 同時比對 station id **與** total_score（不是只看 id 順序）——分數本身的漂移（例如某個維度的
 normalize 範圍被意外改變）不會改變排序，但會被這支腳本的分數容忍度檢查抓到。
 
+**Production Preflight 修正**：記錄的 `BL12 0.79 / BL10 0.38 / R11 0.38 / BL18 0.37 / BL15 0.33`
+這組固定分數是用 **2026-01** 真實資料算出來的，不是任何時候的「最新月份」都會得到同樣的值——
+production data preparation 的 disposable rehearsal（見
+docs/data/production-data-preparation.md 第 4 節）已經實測驗證過：同一個查詢在 2026-08 資料下
+第 2/3 名對調、部分分數有 0.01 量級差異，這是資料不同造成的正常現象，不是 regression，但如果
+`BASELINES` 的查詢不帶 `year`/`month`，腳本會查詢當時 DB 的「最新月份」，一旦 production 累積
+了 2026-01 以後的月份，這組固定分數就會被錯誤地判定為 FAIL。因此：
+
+- `BASELINES`（有固定分數的基準）**必須**帶明確的 `year`/`month`，鎖定查 2026-01，不隨 DB
+  最新月份漂移。
+- `LATEST_MONTH_SMOKE_CHECKS`（不帶 year/month，查詢當時的最新月份）**不**比對固定站點順序或
+  分數，只確認 `success == true`、`data_source == 'real'`、回傳筆數 ≥ 5——用來確認「最新月份的
+  真實資料路徑本身沒壞掉」，不會把不同月份之間正常的分數變化誤判成 regression。
+
 用法：
   python3 scripts/verify_recommend_baseline.py
   python3 scripts/verify_recommend_baseline.py --base-url http://localhost:5180
   python3 scripts/verify_recommend_baseline.py --base-url https://staging.example.com
+  python3 scripts/verify_recommend_baseline.py --skip-latest-month-check   # 只跑固定基準，略過 smoke check
 """
 
 import argparse
@@ -36,11 +51,15 @@ SCORE_TOLERANCE = 0.005  # API 回傳的 total_score 四捨五入到小數點後
 
 # 每一組基準：查詢條件 + 期望的 Top N（依名次排序，station_id 與 total_score 都要對上）。
 # 新增基準時只需要在這個清單多加一個 dict，不需要改動下面的驗證邏輯。
+# 固定分數的基準一律要帶明確的 year/month，鎖定資料來源月份——不能依賴「latest month」，
+# 因為 production 累積更多月份後，「最新月份」會漂移到 2026-01 以外，讓這組記錄下來的分數
+# 不再對應同一份資料（見上方 docstring「Production Preflight 修正」）。
 BASELINES = [
     {
-        'name': 'BL11 → night → food（Phase 1 起沿用至今的既有基準）',
-        'params': {'from': 'BL11', 'time_period': 'night', 'preference': 'food'},
+        'name': 'BL11 → night → food（Phase 1 起沿用至今的既有基準；固定查 2026-01 真實資料）',
+        'params': {'from': 'BL11', 'time_period': 'night', 'preference': 'food', 'year': 2026, 'month': 1},
         'expected_data_source': 'real',
+        'expected_range_label': '2026年1月',
         'expected_top5': [
             ('BL12', 0.79),
             ('BL10', 0.38),
@@ -48,6 +67,18 @@ BASELINES = [
             ('BL18', 0.37),
             ('BL15', 0.33),
         ],
+    },
+]
+
+# latest-month smoke check：刻意不帶 year/month，查詢當時 DB 的最新月份。只確認真實資料路徑
+# 本身沒壞（success/data_source/筆數），不比對固定站點順序或分數——不同月份的排序與分數本來就
+# 會隨真實旅運模式變化，那是正常現象，不是這支腳本要抓的 regression。
+LATEST_MONTH_SMOKE_CHECKS = [
+    {
+        'name': 'BL11 → night → food（latest-month smoke check，不比對固定分數）',
+        'params': {'from': 'BL11', 'time_period': 'night', 'preference': 'food'},
+        'expected_data_source': 'real',
+        'min_results': 5,
     },
 ]
 
@@ -76,12 +107,14 @@ def main():
                          help='MetroPulse 服務的 base URL（預設 http://localhost:5180，即本地 dev server）')
     parser.add_argument('--output', type=str, default='',
                          help='驗證報告輸出路徑（預設 scripts/output/recommend_baseline_report.json）')
+    parser.add_argument('--skip-latest-month-check', action='store_true',
+                         help='只跑 BASELINES（固定分數），略過 LATEST_MONTH_SMOKE_CHECKS')
     args = parser.parse_args()
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     base_url = args.base_url.rstrip('/')
 
-    report = {'base_url': base_url, 'baselines': [], 'failures': []}
+    report = {'base_url': base_url, 'baselines': [], 'latest_month_checks': [], 'failures': []}
 
     def check(scope: str, name: str, ok: bool, detail: str = '') -> None:
         status = 'PASS' if ok else 'FAIL'
@@ -119,6 +152,15 @@ def main():
             f"實際值：{actual_source}",
         )
 
+        expected_range_label = baseline.get('expected_range_label')
+        if expected_range_label:
+            actual_range_label = (data.get('metadata') or {}).get('range_label')
+            entry_check(
+                f"range_label == '{expected_range_label}'（確認真的查到固定月份，不是悄悄退回其他月份）",
+                actual_range_label == expected_range_label,
+                f"實際值：{actual_range_label}",
+            )
+
         recs = data.get('recommendations') or []
         expected_top = baseline['expected_top5']
         entry_check(
@@ -153,6 +195,40 @@ def main():
 
         report['baselines'].append(entry)
         print()
+
+    if not args.skip_latest_month_check:
+        for smoke in LATEST_MONTH_SMOKE_CHECKS:
+            print(f"[{smoke['name']}]")
+            query = urllib.parse.urlencode(smoke['params'])
+            url = f"{base_url}/api/recommend?{query}"
+            data = fetch_json(url)
+
+            entry = {'name': smoke['name'], 'url': url, 'checks': []}
+            scope = smoke['name']
+
+            def entry_check(name: str, ok: bool, detail: str = '') -> None:
+                entry['checks'].append({'name': name, 'ok': ok, 'detail': detail})
+                check(scope, name, ok, detail)
+
+            entry_check('success == true', data.get('success') is True, json.dumps(data)[:300] if not data.get('success') else '')
+
+            if data.get('success'):
+                actual_source = (data.get('metadata') or {}).get('data_source')
+                entry_check(
+                    f"data_source == '{smoke['expected_data_source']}'",
+                    actual_source == smoke['expected_data_source'],
+                    f"實際值：{actual_source}",
+                )
+                recs = data.get('recommendations') or []
+                entry_check(
+                    f"回傳至少 {smoke['min_results']} 筆推薦（不檢查固定站點順序或分數——"
+                    f"最新月份是哪個月、算出來的排序與分數本來就會隨真實資料變動）",
+                    len(recs) >= smoke['min_results'],
+                    f"實際筆數：{len(recs)}；資料月份：{(data.get('metadata') or {}).get('range_label')}",
+                )
+
+            report['latest_month_checks'].append(entry)
+            print()
 
     print(f"{'='*70}")
     all_ok = len(report['failures']) == 0
