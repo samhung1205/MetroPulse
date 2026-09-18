@@ -45,6 +45,7 @@ from import_od_data import (  # noqa: E402
     compute_service_date_period_coverage,
     fetch_range_od_aggregate,
     generate_range_materialization_sql,
+    get_existing_range_is_complete,
 )
 
 
@@ -112,6 +113,18 @@ def main():
         print("\n[結束] 這個年份在 daily_od_flow 完全沒有資料，只記錄狀態列（不存在的年份不會出現在 date_ranges）。")
         print("       不寫入 date_ranges（沒有任何資料代表這個年份從未被匯入，不應該假裝有一列狀態記錄）。")
         return
+
+    if not coverage['is_complete']:
+        existing_is_complete = get_existing_range_is_complete(coverage['range_id'], project_root, args.db_name, remote)
+        if existing_is_complete == 1:
+            print(f"\n[CRITICAL] {args.year} 年目前在 date_ranges 已標記為完整（is_complete=1），"
+                  f"range_od_flow/range_pagerank 應該已經永久保留。", file=sys.stderr)
+            print(f"           但這次重新計算只看到 {coverage['actual_day_count']}/{coverage['expected_day_count']} 天"
+                  f"的 daily_od_flow——很可能是 retention.py 已經 purge 掉這段日期的逐日資料。", file=sys.stderr)
+            print(f"           拒絕寫入：繼續執行會把 date_ranges.is_complete 降級為 0，"
+                  f"讓既有的 range_pagerank/range_od_flow 變成 API 查不到（但資料本身還在）。", file=sys.stderr)
+            print(f"           已完整 materialize 過的年度不需要、也不應該重新執行這支腳本。", file=sys.stderr)
+            sys.exit(1)
 
     station_ids = get_all_station_ids()
 

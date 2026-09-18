@@ -1009,6 +1009,22 @@ def build_coverage_note(coverage: dict) -> str | None:
     return note.replace("'", "''")  # 防禦性跳脫，避免文字內容意外含有單引號時破壞 SQL 字面值
 
 
+def get_existing_range_is_complete(range_id: str, project_root: str, db_name: str, remote: bool) -> int | None:
+    """查詢 date_ranges 目前記錄的 is_complete（不存在回傳 None）。
+
+    materialize_year_range.py／materialize_holiday_range.py 在寫入前用這個判斷
+    「這次重新計算會不會把一個已經完整、外界可能正在依賴的 range 悄悄降級成不完整」——
+    例如 retention.py 已經把這個 range 背後的部分 daily_od_flow purge 掉之後，
+    有人又重新跑了一次 materialize。range_od_flow/range_pagerank 一旦完整寫入就應該
+    永久保留（Phase 3B 的既有承諾），不應該被之後的重新計算意外降級。
+    """
+    rows = _d1_json_query(
+        f"SELECT is_complete FROM date_ranges WHERE range_id = '{range_id}'",
+        project_root, db_name, remote,
+    )
+    return rows[0]['is_complete'] if rows else None
+
+
 def fetch_range_od_aggregate(
     start_date: str, end_date: str, project_root: str, db_name: str, remote: bool,
 ) -> dict[str, dict[tuple[str, str], int]]:
