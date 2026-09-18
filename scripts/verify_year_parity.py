@@ -26,6 +26,7 @@ period）確實被新版完整性判定擋下——只檢查 date_ranges.is_comp
 """
 
 import argparse
+import calendar as _cal_module
 import json
 import os
 import subprocess
@@ -127,11 +128,28 @@ def main():
     # 1. yearly OD aggregate correctness：兩種獨立 SQL 聚合路徑互相驗證
     # ------------------------------------------------------------
     print("\n[1/3] yearly OD aggregate correctness")
-    # 路徑 A：daily_od_flow 直接對整年做 SUM...GROUP BY（不透過 range_od_flow）
-    direct_totals = {r['period']: r['total'] for r in d1_query(
-        f"SELECT period, SUM(flow_count) as total FROM daily_od_flow "
-        f"WHERE service_date BETWEEN '{args.year}-01-01' AND '{args.year}-12-31' GROUP BY period",
-        project_root, remote, args.db_name)}
+    # 路徑 A：daily_od_flow 直接對整年做 SUM...GROUP BY（不透過 range_od_flow）——
+    # 保持「完全獨立於 materialize_year_range.py 使用的 range_od_flow 來源」這個驗證價值。
+    #
+    # Year Materialization Hotfix（見 docs/data/year-materialization-production-hotfix.md）發現：
+    # 對整年 daily_od_flow（production 規模 ~2200 萬列）執行單一 GROUP BY 查詢，在 remote D1 上
+    # 會觸發 Cloudflare API internal error（code 7500）——即使這裡的 GROUP BY period 結果只有 6 列，
+    # 錯誤一樣會發生，證實限制跟「掃描的列數」有關，不是跟「結果列數」有關。因此改成按曆月分 12 次
+    # 查詢（每次只掃該月 ~200 萬列，這正是 Batch 1~4 逐月匯入時反覆驗證過可行的規模），在 Python
+    # 端加總——查詢邏輯本身沒有變（還是直接掃 daily_od_flow，不透過 range_od_flow），只是把
+    # 「一次掃全年」拆成「12 次各掃一個月」，兩者在數學上等價（整數加法結合律）。
+    direct_totals: dict[str, int] = {p: 0 for p in PERIODS}
+    for month in range(1, 13):
+        month_start = f"{args.year}-{month:02d}-01"
+        month_end_day = _cal_module.monthrange(args.year, month)[1]
+        month_end = f"{args.year}-{month:02d}-{month_end_day:02d}"
+        month_rows = d1_query(
+            f"SELECT period, SUM(flow_count) as total FROM daily_od_flow "
+            f"WHERE service_date BETWEEN '{month_start}' AND '{month_end}' GROUP BY period",
+            project_root, remote, args.db_name)
+        for r in month_rows:
+            if r['period'] in direct_totals:
+                direct_totals[r['period']] += r['total']
     # 路徑 B：range_od_flow（materialize_year_range.py 寫入的結果）
     range_totals = {r['period']: r['total'] for r in d1_query(
         f"SELECT period, SUM(flow_count) as total FROM range_od_flow WHERE range_id='{range_id}' GROUP BY period",

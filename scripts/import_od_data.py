@@ -1042,6 +1042,49 @@ def fetch_range_od_aggregate(
     return od_by_period
 
 
+def fetch_year_od_aggregate_from_monthly_ranges(
+    year: int, project_root: str, db_name: str, remote: bool,
+) -> dict[str, dict[tuple[str, str], int]]:
+    """年度 OD 聚合：對已持久化的 12 個月 range_od_flow（range_type='month'）做 SUM，
+    取代直接掃描整年 daily_od_flow（Production Year Materialization Hotfix，見
+    docs/data/year-materialization-production-hotfix.md）。
+
+    根因：對一整年（~2200 萬列）的 daily_od_flow 執行單一 `GROUP BY from,to,period` 在
+    Cloudflare 遠端 D1 上會觸發 API internal error（code 7500）——這是本次才真正在
+    production 規模的真實資料上跑到的路徑，先前所有測試都只在本地 D1 或小型 fixture
+    上驗證過。coverage/completeness 判定（365/366 天 × 6 period）**不受影響、不改動**，
+    仍然直接查 daily_od_flow（見 compute_service_date_period_coverage()）——只有「把
+    OD 流量加總成一組數字」這一步換了資料來源。
+
+    數學等價性：每個月的 range_od_flow 本身就是「SUM(flow_count) GROUP BY
+    from,to,period WHERE service_date 落在該月」的結果，且已經在每月匯入時被
+    verify_range_parity.py 逐筆驗證過與 daily_od_flow 完全一致。對 12 個月的
+    range_od_flow 再做一次 SUM，等於把「先分月加總、再加總 12 個分月結果」，
+    數學上與「直接對整年 daily_od_flow 加總」完全等價（整數加法結合律），
+    不是近似值。已用本地端真實 2025 年資料（12 個月、22,702,706 列 daily_od_flow）
+    逐 OD pair、逐 PageRank 值比對過新舊兩種算法，結果逐位元組相同
+    （見 hotfix 文件第 4 節）。
+
+    刻意按 period 分 6 次查詢（而非一次查全部 period），降低單一 query 需要處理的
+    列數與結果集大小，這是本次修正選擇的實際緩解手段——range_od_flow 上已有
+    idx_range_od_from(range_id, from_station_id, period) 索引可用（EXPLAIN QUERY PLAN
+    確認為 index seek，不是 full scan），不需要新增索引。
+    """
+    month_range_ids = [f"month:{year:04d}-{m:02d}" for m in range(1, 13)]
+    range_id_list = "','".join(month_range_ids)
+    od_by_period: dict[str, dict[tuple[str, str], int]] = {p: defaultdict(int) for p in PERIODS}
+    for period in PERIODS:
+        rows = _d1_json_query(
+            f"SELECT from_station_id, to_station_id, SUM(flow_count) as total "
+            f"FROM range_od_flow WHERE range_id IN ('{range_id_list}') AND period = '{period}' "
+            f"GROUP BY from_station_id, to_station_id",
+            project_root, db_name, remote,
+        )
+        for r in rows:
+            od_by_period[period][(r['from_station_id'], r['to_station_id'])] = r['total']
+    return od_by_period
+
+
 def generate_range_materialization_sql(
     coverage: dict,
     od_by_period: dict,

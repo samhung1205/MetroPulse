@@ -3,11 +3,20 @@
 MetroPulse Phase 3A — yearly range materialization
 ======================================================
 
-把 `daily_od_flow` 裡已經持久化的逐日資料，依整個曆年聚合成 `range_od_flow`／`range_pagerank`
-（`range_type='year'`，`range_id='year:{year}'`），沿用與月度 range 完全相同的管線設計
-（`daily_od_flow` → SQL `SUM...GROUP BY` → `compute_pagerank()`/`normalize_pr()`），
-**不對已算好的月度 PageRank 值做平均**——PageRank 不是線性可加總的量，唯一正確做法是
-先把整年 OD 流量加總、重新建轉移矩陣、重新跑一次 Power Method，這正是這支腳本做的事。
+把逐年 OD 流量聚合成 `range_od_flow`／`range_pagerank`（`range_type='year'`，
+`range_id='year:{year}'`），**不對已算好的月度 PageRank 值做平均**——PageRank 不是線性
+可加總的量，唯一正確做法是先把整年 OD 流量加總、重新建轉移矩陣、重新跑一次 Power Method，
+這正是這支腳本做的事。
+
+**OD 流量聚合來源（Production Year Materialization Hotfix，2026-09-18 起）**：不再直接對
+整年 daily_od_flow 執行單一 `SUM...GROUP BY`——這個查詢在 remote D1 對 production 規模的
+真實資料（一整年 ~2200 萬列）會觸發 Cloudflare API internal error（code 7500）。改為對
+12 個月已持久化的 range_od_flow（每月匯入時就已經算好、且逐月通過 parity 驗證）做 SUM，
+按 period 分 6 次查詢執行。與直接掃 daily_od_flow 數學上完全等價（整數加法結合律），
+已用真實 2025 年資料（22,702,706 列）逐 OD pair、逐 PageRank 值驗證過結果逐位元組相同。
+詳見 import_od_data.fetch_year_od_aggregate_from_monthly_ranges() 與
+docs/data/year-materialization-production-hotfix.md。coverage/completeness 判定
+（下方「完整性」一節）完全不受影響，仍然直接查 daily_od_flow。
 
 完整性（decision：只有完整年度資料才可標成完整年度；Phase 3A.1 收緊為同時驗證 service_date × period）：
   一個年度被視為「完整」，若且唯若同時滿足：
@@ -42,8 +51,9 @@ from import_od_data import (  # noqa: E402
     get_all_station_ids,
     _wrangler_bin,
     _run_wrangler,
+    _d1_json_query,
     compute_service_date_period_coverage,
-    fetch_range_od_aggregate,
+    fetch_year_od_aggregate_from_monthly_ranges,
     generate_range_materialization_sql,
     get_existing_range_is_complete,
 )
@@ -62,10 +72,32 @@ def compute_year_coverage(year: int, project_root: str, db_name: str, remote: bo
     return coverage
 
 
+def verify_all_monthly_ranges_present(year: int, project_root: str, db_name: str, remote: bool) -> list[str]:
+    """Year Materialization Hotfix 安全檢查：新的年度聚合來源是 12 個月的 range_od_flow，
+    不再直接掃 daily_od_flow。如果 daily_od_flow 的 service_date × period 覆蓋率顯示完整，
+    但因為某種原因（例如月度 range_od_flow 沒有正確寫入）缺了其中一個月，新方法會安靜地
+    算出一個少了一整個月的錯誤年度總和——不像直接查 daily_od_flow 那樣「資料在哪裡查都到」，
+    所以這裡必須先明確驗證 12 個月的 range_od_flow 都真的存在，缺任何一個月就直接中止，
+    不能假設「daily 完整＝月度 range 一定完整」。回傳缺少的 range_id 清單（空清單＝12 個月都在）。
+    """
+    expected = [f"month:{year:04d}-{m:02d}" for m in range(1, 13)]
+    range_id_list = "','".join(expected)
+    rows = _d1_json_query(
+        f"SELECT DISTINCT range_id FROM range_od_flow WHERE range_id IN ('{range_id_list}')",
+        project_root, db_name, remote,
+    )
+    present = {r['range_id'] for r in rows}
+    return [rid for rid in expected if rid not in present]
+
+
 def fetch_year_od_aggregate(year: int, project_root: str, db_name: str, remote: bool) -> dict[str, dict[tuple[str, str], int]]:
-    start = f"{year:04d}-01-01"
-    end = f"{year:04d}-12-31"
-    return fetch_range_od_aggregate(start, end, project_root, db_name, remote)
+    """年度 OD 聚合：改為 SUM 12 個月的 range_od_flow（Production Year Materialization Hotfix），
+    不再直接掃整年 daily_od_flow——後者在 remote D1 對 production 規模的真實資料（~2200 萬列）
+    會觸發 Cloudflare API internal error（code 7500）。見
+    import_od_data.fetch_year_od_aggregate_from_monthly_ranges() 的完整根因與數學等價性說明，
+    以及 docs/data/year-materialization-production-hotfix.md 的正確性驗證。
+    """
+    return fetch_year_od_aggregate_from_monthly_ranges(year, project_root, db_name, remote)
 
 
 def generate_year_sql(coverage: dict, od_by_period: dict, station_ids: list[str]) -> tuple[str, dict]:
@@ -129,7 +161,19 @@ def main():
     station_ids = get_all_station_ids()
 
     if coverage['is_complete']:
-        print("\n[2/3] 對 daily_od_flow 執行 SQL SUM...GROUP BY（整年聚合）...")
+        print("\n[2/3] 驗證 12 個月的 range_od_flow 都存在（Year Materialization Hotfix 安全檢查）...")
+        missing_months = verify_all_monthly_ranges_present(args.year, project_root, args.db_name, remote)
+        if missing_months:
+            print(f"\n[CRITICAL] daily_od_flow 顯示 {args.year} 年 service_date × period 覆蓋完整，"
+                  f"但以下月份的 range_od_flow 不存在：{', '.join(missing_months)}", file=sys.stderr)
+            print(f"           年度聚合現在改用 12 個月的 range_od_flow 加總，缺任何一個月都會讓"
+                  f"年度總和不完整——拒絕繼續，不假裝聚合得出正確結果。", file=sys.stderr)
+            print(f"           請確認這些月份是否已透過 import_od_data.py 正常匯入（monthly range 應該"
+                  f"隨月度匯入自動寫入），排除後再重跑本腳本。", file=sys.stderr)
+            sys.exit(1)
+        print(f"  ✅ 12 個月的 range_od_flow 全部存在")
+
+        print("\n[2b/3] 對 12 個月的 range_od_flow 執行 SQL SUM...GROUP BY（按 period 分批，整年聚合）...")
         od_by_period = fetch_year_od_aggregate(args.year, project_root, args.db_name, remote)
         od_total = sum(len(v) for v in od_by_period.values())
         print(f"  聚合出 {od_total:,} 筆 OD×period 組合")
