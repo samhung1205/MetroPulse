@@ -75,6 +75,57 @@ def months_ago(today: date, n: int) -> date:
     return date(year, month, day)
 
 
+def find_unmaterialized_ranges_at_risk(cutoff_str: str, project_root: str, remote: bool, db_name: str) -> dict:
+    """
+    Retention safety guard（Phase 3B，年度檢查於 Release Hardening 收緊）：
+
+    daily_od_flow 是連假／年度 range materialization 的唯一輸入。如果一個連假事件已經登錄在
+    holiday_events，但還沒被 materialize_holiday_range.py 成功算過（is_complete=1），這次
+    purge 一旦刪掉它涵蓋的日期，這個連假就永遠無法被重新計算——不是「之後再補算」，是「資料
+    已經不存在了」。同樣的風險也適用於年度：不管這個年度曾經被檢查過（date_ranges 有
+    is_complete=0 的狀態列）、還是**從未執行過** materialize_year_range.py（date_ranges 完全
+    沒有這個 range_id 的列），只要它還沒被標記為完整（is_complete=1），purge 掉它涵蓋的任何
+    一天都可能讓這個年度永遠無法被完整計算。
+
+    這裡回傳兩份清單：
+      - holidays_at_risk：holiday_events 裡「起始日期落在 purge 範圍內」且尚未完整 materialize
+        的事件。**只保護已登錄的連假**——holiday_events 是唯一的已知連假名冊，系統沒有辦法、
+        也不假裝能保護一個從未登錄過的連假（例如還沒人力key進 holiday_events 的下一屆春節）。
+      - years_at_risk：從**即將被這次 purge 刪除的 daily_od_flow 列**本身反推出受影響的曆年
+        （`substr(service_date,1,4)`），再 LEFT JOIN `date_ranges` 檢查每個受影響年度是否已有
+        `is_complete=1` 的永久 range。沒有 JOIN 到任何列（代表這個年度從未被 materialize 過）
+        與 JOIN 到 `is_complete=0`（代表曾被檢查但不完整）都會被抓出來——這是這次修正的重點：
+        舊版只查「date_ranges 裡已經有 is_complete=0 狀態列」的年度，會漏掉「連一次
+        materialize_year_range.py 都沒跑過」的年度，因為那樣的年度在 date_ranges 完全沒有
+        任何記錄可查。
+
+    只要任一清單非空，--purge 就必須拒絕執行（除非明確傳入 override），--dry-run 則只是提前示警。
+    """
+    holidays_at_risk = d1_query(
+        f"SELECT h.event_key, h.year, h.name_zh, h.start_date, h.end_date "
+        f"FROM holiday_events h "
+        f"WHERE h.start_date < '{cutoff_str}' "
+        f"AND NOT EXISTS ("
+        f"  SELECT 1 FROM date_ranges d "
+        f"  WHERE d.range_id = 'holiday:' || h.event_key || ':' || h.year AND d.is_complete = 1"
+        f") ORDER BY h.start_date",
+        project_root, remote, db_name,
+    )
+    years_at_risk = d1_query(
+        f"SELECT y.year, dr.is_complete, dr.start_date, dr.end_date, "
+        f"dr.day_count, dr.expected_day_count, dr.coverage_note "
+        f"FROM ("
+        f"  SELECT DISTINCT substr(service_date, 1, 4) as year FROM daily_od_flow "
+        f"  WHERE service_date < '{cutoff_str}'"
+        f") y "
+        f"LEFT JOIN date_ranges dr ON dr.range_id = 'year:' || y.year "
+        f"WHERE dr.is_complete IS NULL OR dr.is_complete = 0 "
+        f"ORDER BY y.year",
+        project_root, remote, db_name,
+    )
+    return {'holidays_at_risk': holidays_at_risk, 'years_at_risk': years_at_risk}
+
+
 def permanent_table_counts(project_root: str, remote: bool, db_name: str) -> dict:
     """永久保留表的列數快照，purge 前後都會印出來，讓「這些表完全沒被動過」肉眼可驗證。"""
     row = d1_query(
@@ -99,6 +150,11 @@ def main():
     parser.add_argument('--remote', action='store_true')
     parser.add_argument('--db-name', dest='db_name', type=str, default='mrt-rank-db')
     parser.add_argument('--as-of', type=str, default='', help='以指定日期（YYYY-MM-DD）取代「今天」計算窗口，供測試使用')
+    parser.add_argument(
+        '--acknowledge-unmaterialized-ranges', action='store_true',
+        help='明確承認並略過 unmaterialized holiday/year range 的 purge 保護（不是預設行為，'
+             '每次都要明確傳入——不要 silent purge）'
+    )
     args = parser.parse_args()
 
     do_purge = args.purge
@@ -138,9 +194,36 @@ def main():
     print(f"\n[範圍] 窗口內（service_date >= {cutoff_str}），{'將' if not do_purge else '執行後仍'}保留：")
     print(f"  {remaining_window['rows']:,} 列（{remaining_window['earliest']} ~ {remaining_window['latest']}）")
 
+    # Retention safety guard：在決定是否清理之前，先確認 purge 範圍內沒有「已登錄但尚未
+    # materialize」的連假／年度 range——這些 range 一旦連 daily_od_flow 都被刪了，就永遠無法
+    # 重新計算，不是「之後再補」的問題。
+    at_risk = find_unmaterialized_ranges_at_risk(cutoff_str, project_root, args.remote, args.db_name)
+    holidays_at_risk = at_risk['holidays_at_risk']
+    years_at_risk = at_risk['years_at_risk']
+    if holidays_at_risk or years_at_risk:
+        print(f"\n⚠️  [Retention safety guard] 偵測到尚未 materialize、且會被這次 purge 波及的 range：")
+        for h in holidays_at_risk:
+            print(f"  - 連假 {h['name_zh']}（{h['event_key']}:{h['year']}）：{h['start_date']} ~ {h['end_date']}"
+                  f" — 已登錄 holiday_events，但尚未完整 materialize")
+        for y in years_at_risk:
+            if y.get('start_date') is None:
+                print(f"  - 年度 year:{y['year']}：從未執行過 materialize_year_range.py，"
+                      f"date_ranges 沒有任何記錄")
+            else:
+                note = f"（{y['coverage_note']}）" if y.get('coverage_note') else ''
+                print(f"  - 年度 year:{y['year']}：{y['start_date']} ~ {y['end_date']} — 曾被計算但尚未完整{note}")
+        print(f"  這次 purge 若執行，這些 range 涵蓋的 daily_od_flow 會被永久刪除，之後無法再重新計算。")
+        print(f"  建議：先執行 materialize_holiday_range.py / materialize_year_range.py 把這些 range 算完，")
+        print(f"        或使用 --acknowledge-unmaterialized-ranges 明確承認並略過這個保護。")
+
     if not scope['rows_to_purge']:
         print("\n沒有需要清理的資料，結束。")
         return
+
+    if do_purge and (holidays_at_risk or years_at_risk) and not args.acknowledge_unmaterialized_ranges:
+        print(f"\n🚫 [Retention safety guard] 拒絕執行 purge——不要 silent purge。", file=sys.stderr)
+        print(f"   請先把上方列出的 range materialize 完成，或明確加上 --acknowledge-unmaterialized-ranges。", file=sys.stderr)
+        sys.exit(1)
 
     if not do_purge:
         print(f"\n這是 dry-run：以上是「如果現在執行 --purge」會發生的事，尚未刪除任何資料。")
