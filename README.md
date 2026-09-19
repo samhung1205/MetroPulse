@@ -27,13 +27,18 @@
 - **站點詳情頁**：延續推薦查詢脈絡，先呈現站點身分、推薦關係與特徵，再提供 PageRank、偏好與人流連結證據及同源資料表
 - **🆕 真實旅運量資料接入**：整合台北捷運公開 OD 資料，以真實旅運量計算 PageRank
 - **🆕 旅運量分析中心**：`/analytics` 頁面，支援月份、時段、Top 10/20/30、站點排名與月份資料；只有兩個以上月份才顯示跨月趨勢
+- **🆕 Temporal range 查詢**：`range_type=month|year|holiday` 三種資料範圍——月份（既有行為）、整年（`range_type=year&year=`，只有該曆年 12 個月皆已匯入才會標記為完整）、連假（`range_type=holiday&event_key=&year=`，見下方「production 連假支援」）。年度／連假的 OD 與 PageRank 皆是**重新聚合、重新跑 Power Method**算出來的獨立結果，不是把月度 PageRank 平均——PageRank 不是線性可加總的量。
+- **🆕 同節日跨年比較**：`GET /api/analytics/holiday-comparison?event_key=&period=&station=`，同一個連假（如春節）不同年份並排比較 PageRank 排名與 OD 流量；缺資料或尚未完整計算的年份會明確標示狀態（`not_materialized` / `incomplete`），不會被當成 0 呈現。
 
 ### 未來擴充
 
 - [ ] gamma 參數互動調整面板
 - [ ] 使用者回饋與推薦改善
 - [ ] 多段行程規劃
-- [ ] 定期自動匯入最新月份旅運量（CI/CD）
+- [ ] Weekend／weekday 分析（目前推薦與分析皆不分平假日）
+- [ ] Custom date range（目前只支援月份／年度／已登錄連假三種固定範圍，使用者無法自訂任意起訖日）
+- [ ] **Special Overnight Event Analysis**：目前六時段模型（見下方時段劃分）刻意不涵蓋 23:00 及 00:00–06:00，這不是遺漏——只有官方公告的特殊延長／通宵營運事件（例如跨年夜）才有分析這段時間的意義，一般日期的凌晨時段本來就不是這個推薦系統要處理的場景。未來若要支援，會是針對特定事件的獨立分析，**不會**修改現有六時段 period architecture。
+- [ ] 定期自動匯入最新月份旅運量（CI/CD）——目前為人工執行，見下方「monthly 更新 SOP」
 
 ## 頁面與路由
 
@@ -98,10 +103,15 @@ GET /api/recommend?from={站點ID}&time_period={時段}&preference={偏好}&top_
 | time_period | ✅ | 時段 | morning_peak, morning, noon, afternoon, evening_peak, night |
 | preference | 選填 | 偏好 | attraction, food, shopping, nightlife, family, all |
 | top_n | 選填 | 數量（預設 5） | 1~20 |
+| range_type | 選填 | 資料範圍（預設 `month`，向下相容不帶此參數的既有呼叫） | `month`／`year`／`holiday` |
+| year, month | `range_type=month` 時選填；`range_type=year` 時 year 必填 | 指定月份／年度；不帶 year/month 時取最新已匯入月份 | year=2025&month=1 |
+| event_key, year | `range_type=holiday` 時皆必填 | 連假事件代碼與年份（不可與 month 併用） | event_key=lunar-new-year&year=2025 |
 
 **範例：**
 ```bash
 curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
+curl "/api/recommend?from=BL12&time_period=night&preference=food&range_type=year&year=2025"
+curl "/api/recommend?from=BL12&time_period=night&preference=food&range_type=holiday&event_key=lunar-new-year&year=2025"
 ```
 
 ### 其他 API
@@ -115,9 +125,12 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 | `GET /api/pagerank/:stationId` | 站點各時段 PR 值 |
 | `GET /api/recommend/options` | 表單選項（站點、時段、偏好列表） |
 | `GET /api/analytics/months` | 已匯入的真實旅運量月份列表 |
-| `GET /api/analytics/pagerank?year=&month=&period=` | 真實 PageRank 排名 |
+| `GET /api/analytics/years` | 已完整 materialize 的年度列表（不完整年度不會出現） |
+| `GET /api/analytics/holidays` | 已登錄的連假列表，依 event_key 分組、標示每年是否已完整 materialize |
+| `GET /api/analytics/pagerank?range_type=&year=&month=&event_key=&period=` | 真實 PageRank 排名，支援月／年／連假三種 range_type |
 | `GET /api/analytics/flow?from=&year=&month=&period=` | 起站 OD 流量 Top N |
 | `GET /api/analytics/trends?station=&period=` | 站點跨月 PR 趨勢 |
+| `GET /api/analytics/holiday-comparison?event_key=&period=&station=` | 同一連假跨年比較（PageRank／OD 流量），見上方「同節日跨年比較」 |
 
 ## 資料架構
 
@@ -143,6 +156,96 @@ curl "/api/recommend?from=BL12&time_period=afternoon&preference=food&top_n=5"
 | afternoon | 14:00-17:00 | 購物/觀光 |
 | evening_peak | 17:00-19:00 | 下班通勤 |
 | night | 19:00-23:00 | 夜生活/聚餐 |
+
+> **關於 23:00～06:00**：以上六時段刻意不涵蓋 23:00 及 00:00–06:00。一般日期的凌晨時段沒有穩定、可比較的旅運模式可供推薦，只有官方公告的特殊延長／通宵營運事件（例如跨年夜）才有分析這段時間的意義——這會是未來獨立於現有六時段模型之外的 event-specific 分析，見「未來擴充」的 Special Overnight Event Analysis。
+
+## 生產環境與資料維運
+
+### Temporal 資料模型（production）
+
+| 資料表 | 角色 | 保留政策 |
+|--------|------|----------|
+| `daily_od_flow` | 逐日、逐站、逐時段 OD 流量——月／年／連假聚合的唯一輸入 | **Rolling 18-month window**：只保留最近 18 個月，較舊的列會被 `retention.py --purge` 清除 |
+| `range_od_flow` / `range_pagerank` | 依 `range_id`（`month:YYYY-MM` / `year:YYYY` / `holiday:<event_key>:YYYY`）預先聚合好的 OD 總量與 PageRank 結果 | **永久保留**，不受 `daily_od_flow` retention 影響 |
+| `date_ranges` | 每個 range 的日期範圍、覆蓋天數與 `is_complete` 完整性狀態 | 永久保留 |
+| `holiday_events` | 人工維護的連假 metadata（event_key／年份／日期範圍／官方來源），跨年比較的名冊 | 永久保留 |
+
+**已 materialize 的月／年／連假 range，即使對應的 `daily_od_flow` 逐日明細已被 retention 清除，仍然永久可查**——查詢時讀的是 `range_od_flow`／`range_pagerank`，不是逐日表。這也是為什麼 2025-01～2025-03-18 的每日明細已被清除，但 `month:2025-01` 推薦、`year:2025`、2025 年各連假查詢仍然全部正常運作。
+
+### D1 與 R2 的分工
+
+- **Cloudflare D1（`mrt-rank-db`）**：唯一的 production 查詢資料庫。線上服務（首頁推薦、`/analytics`、所有 API）只讀 D1，沒有 R2 binding。
+- **Cloudflare R2（`metropulse-raw-od-archive`）**：原始 CSV 的長期封存（`import_od_data.py --archive-to-r2`），供未來重新匯入、稽核或災難復原追溯來源，**不參與任何線上查詢路徑**。
+
+### 目前 production 資料涵蓋範圍
+
+- 逐日粒度：**2025-03-19 ～ 2026-08-31**（18 個月滾動窗口內）；2025-01-01～2025-03-18 已依保留政策清除逐日明細，但月度／年度／連假聚合仍完整保留。
+- `year:2025`：完整（12 個月皆已匯入）。`year:2026` 目前**不完整**（僅 1～8 月），不會、也不可被查詢為完整年度。
+- 連假支援：
+
+  | event_key | 2025 | 2026 |
+  |---|---|---|
+  | 春節 `lunar-new-year` | ✅ 完整 | ✅ 完整 |
+  | 228 `peace-memorial-day` | ✅ 完整 | ✅ 完整 |
+  | 兒童節／清明節 `qingming-childrens-day` | ✅ 完整 | ✅ 完整 |
+  | 端午節 `dragon-boat` | ✅ 完整 | ✅ 完整 |
+  | 中秋節 `mid-autumn` | ✅ 完整 | ⏳ 已登錄 metadata，等待 2026-09 資料匯入後才能 materialize |
+  | 國慶日 `national-day` | ✅ 完整 | ⏳ 已登錄 metadata，等待 2026-10 資料匯入後才能 materialize |
+
+### Monthly 更新 SOP（目前為 **人工執行**，非自動化）
+
+沒有排程器（無 GitHub Actions workflow、無 wrangler cron trigger、無 Worker `scheduled()` handler）會自動觸發匯入；每月更新由人工依序執行：
+
+```bash
+# 1. 匯入新月份（含 R2 封存）
+python3 scripts/import_od_data.py --year YYYY --month MM --apply-remote --db-name mrt-rank-db --archive-to-r2
+
+# 2. 逐月 parity 驗證，6/6 皆須 PASS 才算成功
+python3 scripts/verify_range_parity.py --year YYYY --month MM --remote --db-name mrt-rank-db
+
+# 3. 若該月份補齊了某個連假／整年的資料，才 materialize（成功後也要 verify）
+python3 scripts/materialize_holiday_range.py --event-key <event_key> --year YYYY --remote --db-name mrt-rank-db
+python3 scripts/verify_holiday_parity.py --event-key <event_key> --year YYYY --remote --db-name mrt-rank-db
+python3 scripts/materialize_year_range.py --year YYYY --remote --db-name mrt-rank-db
+python3 scripts/verify_year_parity.py --year YYYY --remote --db-name mrt-rank-db
+
+# 4. Regression 檢查
+python3 scripts/verify_recommend_baseline.py --base-url <本地連 production D1 的 wrangler dev URL>
+```
+
+已有月份需要重新匯入（例如上游 CSV 修正、或把只有舊版 legacy 資料的月份升級成新版逐日粒度）時使用 `--maintenance-reimport`：犧牲單一檔案的原子性（DELETE 與 INSERT 分兩次呼叫）以避開大表 DELETE 在非同步匯入路徑上的用戶端輪詢逾時，完成後強制核對列數，不一致會以非零狀態碼中止，不會靜默視為成功。**新月份的一般匯入請勿使用此旗標**。
+
+生產環境建議的自動化方向（尚未實作，見 `docs/deployment/deployment-preflight.md`）：scheduled availability check（偵測新月份 CSV 是否發布）→ human approval → 上述步驟 1～4，**purge 永遠不進無人審核的自動化排程**。
+
+### Retention（`daily_od_flow` 18 個月滾動窗口）
+
+```bash
+# 只回報，不刪除——正式 purge 前一律先跑這個
+python3 scripts/retention.py --dry-run --remote --db-name mrt-rank-db
+
+# 確認 dry-run 結果無誤、且已取得 D1 Time Travel 復原座標後，才執行
+python3 scripts/retention.py --purge --remote --db-name mrt-rank-db
+```
+
+流程固定是 **dry-run → 人工複核 → purge**，不建議把 `--purge` 放進無人審核的自動化排程。`--purge` 內部把整個窗口外的 DELETE 拆成多個 `[batch_start, batch_end)` 區間分批執行（預設每批 7 天，`--batch-days` 可調），避免單一大範圍 DELETE 在 remote D1 觸發 CPU time limit（code 7429）；每批獨立 commit，可安全中斷後重跑（已刪除的日期會自動略過）。有登錄但尚未完整 materialize 的連假／年度，其涵蓋的日期會被 retention guard 自動保護、拒絕 purge（除非明確傳入 `--acknowledge-unmaterialized-ranges`）。實際執行 purge 前務必先用 `wrangler d1 time-travel info mrt-rank-db` 取得復原 bookmark。
+
+### 驗證腳本一覽
+
+| 腳本 | 用途 |
+|---|---|
+| `backfill_status.py` | 回報各月份是否已有逐日粒度資料 |
+| `verify_range_parity.py` | 驗證單一月份的 `range_od_flow`／`range_pagerank` 與 `daily_od_flow` 完全等價（OD 守恆、PageRank 全站比對） |
+| `verify_year_parity.py` | 驗證年度聚合正確性，含獨立於 `range_od_flow` 之外的 `daily_od_flow` 交叉驗證 |
+| `verify_holiday_parity.py` | 驗證連假聚合正確性 |
+| `verify_recommend_baseline.py` | 固定基準（`BL11→night→food`）分數回歸檢查，偵測任何非預期的排序／分數變動 |
+| `retention.py --dry-run` | Retention 影響範圍預覽，不刪除任何資料 |
+
+### 正確性不變量（每次驗證腳本實際檢查的內容）
+
+- **OD 流量守恆**：`range_od_flow` 各時段總量必須與獨立掃描 `daily_od_flow` 的加總結果逐位元組相等。
+- **PageRank 全站覆蓋**：118/118 站不缺、`pr_value` 總和 ≈ 1.0（Power Method 正規化不變量）、`pr_rank` 是 1..118 的完整排列無重複。
+- **年度聚合不可用月度平均取代**：PageRank 不是線性可加總的量，`year:YYYY` 的 OD 流量是重新加總 12 個月的 `range_od_flow`（按 period 分批查詢，避免 remote D1 觸發大範圍掃描的 CPU 限制），再重新跑一次 Power Method，**不是**對 12 個月已算好的 PageRank 值取平均。
+- **已完整的 range 不可被降級**：`materialize_year_range.py`／`materialize_holiday_range.py` 重跑時，若目標 range 已經 `is_complete=1`，會拒絕執行並以非零狀態碼中止，避免任何後續操作意外覆蓋已驗證完整的結果。
 
 ## 技術架構
 
@@ -177,10 +280,15 @@ webapp/
 ├── public/static/
 │   ├── mrt-map.js            # SVG 路線圖互動模組
 │   └── styles.css            # 共用設計標記與頁面／元件樣式
-├── migrations/
-│   ├── 0001_schema.sql       # 資料表結構
-│   ├── 0002_real_data.sql    # 真實旅運量資料表
-│   └── 0003_add_r01_guangci.sql # R01 廣慈/奉天宮
+├── migrations/                # 0001~0007：schema、真實資料表、R01 站點、
+│                               # daily/range temporal 表、完整性欄位、holiday_events
+├── scripts/                   # ETL／materialize／驗證／retention（皆為獨立 Python CLI）
+│   ├── import_od_data.py      # 月份匯入（含 --maintenance-reimport、--archive-to-r2）
+│   ├── materialize_year_range.py / materialize_holiday_range.py
+│   ├── verify_range_parity.py / verify_year_parity.py / verify_holiday_parity.py
+│   ├── verify_recommend_baseline.py
+│   ├── backfill_status.py
+│   └── retention.py           # daily_od_flow 18 個月滾動窗口
 ├── seed.sql                   # 種子資料
 ├── wrangler.jsonc             # Cloudflare 設定
 ├── vite.config.ts             # Vite 建置
@@ -265,6 +373,7 @@ python3 scripts/import_od_data.py --year 2026 --month 1 --apply-remote
 > - `db:seed:remote` 使用 `INSERT OR IGNORE`，不會覆蓋已存在的資料。若要修改既有資料，需另外執行 `UPDATE` SQL。
 > - Cloudflare Pages 部署有兩種網址：`metro-go.pages.dev`（永遠指向最新 Production）與 `<hash>.metro-go.pages.dev`（特定版本快照）。測試請使用前者。
 > - 需先完成 `wrangler login` 才能執行 remote 相關指令。
+> - **`metro-go` 是唯一的 production Pages project**（Direct Upload，未連接 Git repository，production branch 固定 `main`）。部署永遠是更新這一個既有 project——不建立第二個 Pages project、不建立第二個 production hostname。
 
 ## 使用指南
 
