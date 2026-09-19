@@ -148,6 +148,13 @@ def main():
     action.add_argument('--dry-run', action='store_true', help='只回報，不刪除（未指定 --purge 時的預設行為）')
     action.add_argument('--purge', action='store_true', help='實際執行刪除')
     parser.add_argument('--remote', action='store_true')
+    parser.add_argument(
+        '--batch-days', type=int, default=7,
+        help='PURGE 分批天數，預設 7 天一批（production hotfix，2026-09）：單一 DELETE 涵蓋整個保留窗口外'
+             '的資料（production 規模可達數百萬列）會讓 remote D1 觸發「D1 DB exceeded its CPU time '
+             'limit and was reset」（code 7429）——這是 Cloudflare 官方對此錯誤的建議處理方式'
+             '（split the query into smaller shards）。dry-run 不受影響，只有 --purge 實際執行時才分批。'
+    )
     parser.add_argument('--db-name', dest='db_name', type=str, default='mrt-rank-db')
     parser.add_argument('--as-of', type=str, default='', help='以指定日期（YYYY-MM-DD）取代「今天」計算窗口，供測試使用')
     parser.add_argument(
@@ -231,13 +238,40 @@ def main():
         print(f"這支腳本產生的唯一 DELETE 目標是 daily_od_flow，其餘表完全沒有對應的刪除路徑。")
         return
 
-    print(f"\n[執行] DELETE FROM daily_od_flow WHERE service_date < '{cutoff_str}' ...")
-    result = d1_exec(
-        f"DELETE FROM daily_od_flow WHERE service_date < '{cutoff_str}'",
-        project_root, args.remote, args.db_name,
-    )
-    changes = result.get('meta', {}).get('changes')
-    print(f"  已刪除 {changes if changes is not None else scope['rows_to_purge']} 列。")
+    # 分批 DELETE（production hotfix，2026-09）：語意仍然只有「service_date < cutoff」，只是
+    # 拆成多個獨立 commit 的 [batch_start, batch_end) 區間依序執行，避免單一大範圍 DELETE 在
+    # remote D1 觸發 code 7429（CPU time limit）。每批各自 commit，任一批失敗立即中止（d1_exec
+    # 內部已經是 sys.exit(1)），批次邊界資訊會先印出，失敗時能清楚看到卡在哪一天。
+    #
+    # Rerun-safe：batch_start 一律取「這次執行當下」scope['earliest']（已受 cutoff 篩選的
+    # daily_od_flow 實際最早日期），如果上次執行只刪到一半就中斷，重新執行時 scope['earliest']
+    # 會自動反映「還剩下哪些日期沒刪」，批次排程從那裡重新開始，不會重複刪除、也不需要人工指定
+    # 從哪裡接續。
+    print(f"\n[執行] 分批 DELETE FROM daily_od_flow WHERE service_date < '{cutoff_str}'"
+          f"（每批 {args.batch_days} 天，batch commit）...")
+    total_deleted = 0
+    batch_num = 0
+    current = date.fromisoformat(scope['earliest'])
+    while current < cutoff:
+        batch_end = min(current + timedelta(days=args.batch_days), cutoff)
+        batch_num += 1
+        print(f"  [批次 {batch_num}] {current.isoformat()} ~ {batch_end.isoformat()}（不含）... ", end='', flush=True)
+        result = d1_exec(
+            f"DELETE FROM daily_od_flow WHERE service_date >= '{current.isoformat()}' "
+            f"AND service_date < '{batch_end.isoformat()}'",
+            project_root, args.remote, args.db_name,
+        )
+        changes = result.get('meta', {}).get('changes')
+        if changes is None:
+            # 本地 wrangler d1 execute 的 meta 不含 changes 欄位（remote 才有）；不要把
+            # 「不知道」誤報成「刪了 0 列」。
+            print("已刪除（本地 wrangler 未回報確切列數，remote 執行時才會有 changes）")
+        else:
+            total_deleted += changes
+            print(f"已刪除 {changes:,} 列")
+        current = batch_end
+
+    print(f"\n  分批 purge 完成：共 {batch_num} 批，總計刪除 {total_deleted:,} 列。")
 
     after = permanent_table_counts(project_root, args.remote, args.db_name)
     print("\n[確認] 永久保留表列數（操作後，必須與操作前完全相同）：")
