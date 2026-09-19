@@ -11,6 +11,8 @@
 
 在此學術模型基礎上，疊加偏好匹配與旅行成本，構成一個可檢視評分依據與資料限制的推薦系統。
 
+> 給 AI／新進開發者：在這個 repo 上工作前，先讀 [`AGENTS.md`](AGENTS.md)——涵蓋專案架構、temporal 資料模型、PageRank／gamma／正規化不變量、retention／purge 規則、部署限制等 AI 開發規則與現況快照，讓新的 clone 也能快速理解專案而不用重新考古。
+
 ## 核心功能
 
 ### 已完成（v2.0）
@@ -192,9 +194,15 @@ curl "/api/recommend?from=BL12&time_period=night&preference=food&range_type=holi
   | 中秋節 `mid-autumn` | ✅ 完整 | ⏳ 已登錄 metadata，等待 2026-09 資料匯入後才能 materialize |
   | 國慶日 `national-day` | ✅ 完整 | ⏳ 已登錄 metadata，等待 2026-10 資料匯入後才能 materialize |
 
-### Monthly 更新 SOP（目前為 **人工執行**，非自動化）
+### Monthly 更新 SOP
 
-沒有排程器（無 GitHub Actions workflow、無 wrangler cron trigger、無 Worker `scheduled()` handler）會自動觸發匯入；每月更新由人工依序執行：
+| 階段 | 狀態 | 機制 |
+|---|---|---|
+| **Availability check**（偵測官方新月份 CSV 是否發布） | ✅ **已自動化** | [`.github/workflows/monthly-data-check.yml`](.github/workflows/monthly-data-check.yml)，每兩週排程 + 可手動 `workflow_dispatch`；只讀（呼叫本站公開的 `/api/analytics/months` 與官方 CSV 的 HEAD 回應），不需要任何 Cloudflare 憑證，找到新月份時建立／更新一個 GitHub Issue 提醒，**不會自動匯入** |
+| **Production import**（實際寫入 D1／R2） | ⚠️ **人工核准觸發**，執行過程自動化 | [`.github/workflows/monthly-data-import.yml`](.github/workflows/monthly-data-import.yml)，僅 `workflow_dispatch`，需人工輸入 `year`／`month`（選填 `holiday_event_key`）後手動執行；import → R2 archive → parity → 年度 materialize → （選填）連假 materialize → baseline/smoke，任一步驟失敗立即停止 |
+| **Retention purge**（清除 `daily_od_flow` 逐日明細） | 🔒 **只能人工執行**，永不自動化 | `scripts/retention.py`，流程固定 dry-run → 人工複核 → 取得 D1 Time Travel bookmark → 手動 `--purge`，**不進任何 workflow、不接 cron** |
+
+本地手動執行（與 workflow 內部呼叫的指令相同）：
 
 ```bash
 # 1. 匯入新月份（含 R2 封存）
@@ -213,9 +221,9 @@ python3 scripts/verify_year_parity.py --year YYYY --remote --db-name mrt-rank-db
 python3 scripts/verify_recommend_baseline.py --base-url <本地連 production D1 的 wrangler dev URL>
 ```
 
-已有月份需要重新匯入（例如上游 CSV 修正、或把只有舊版 legacy 資料的月份升級成新版逐日粒度）時使用 `--maintenance-reimport`：犧牲單一檔案的原子性（DELETE 與 INSERT 分兩次呼叫）以避開大表 DELETE 在非同步匯入路徑上的用戶端輪詢逾時，完成後強制核對列數，不一致會以非零狀態碼中止，不會靜默視為成功。**新月份的一般匯入請勿使用此旗標**。
+已有月份需要重新匯入（例如上游 CSV 修正、或把只有舊版 legacy 資料的月份升級成新版逐日粒度）時使用 `--maintenance-reimport`：犧牲單一檔案的原子性（DELETE 與 INSERT 分兩次呼叫）以避開大表 DELETE 在非同步匯入路徑上的用戶端輪詢逾時，完成後強制核對列數，不一致會以非零狀態碼中止，不會靜默視為成功。**新月份的一般匯入請勿使用此旗標**（`monthly-data-import.yml` workflow 也未使用此旗標，只用於本地手動維運）。
 
-生產環境建議的自動化方向（尚未實作，見 `docs/deployment/deployment-preflight.md`）：scheduled availability check（偵測新月份 CSV 是否發布）→ human approval → 上述步驟 1～4，**purge 永遠不進無人審核的自動化排程**。
+`monthly-data-import.yml` 需要 repository secrets `CLOUDFLARE_API_TOKEN`（建議建立僅有 D1:Edit 與 R2:Edit 權限的專屬 token，不要用 Global API Key）與 `CLOUDFLARE_ACCOUNT_ID`；尚未設定時執行會在第一步清楚失敗並說明設定方式，不會用空憑證嘗試寫入。
 
 ### Retention（`daily_od_flow` 18 個月滾動窗口）
 
@@ -280,10 +288,14 @@ webapp/
 ├── public/static/
 │   ├── mrt-map.js            # SVG 路線圖互動模組
 │   └── styles.css            # 共用設計標記與頁面／元件樣式
+├── .github/workflows/          # availability check（排程）／production import（手動）
+│   ├── monthly-data-check.yml
+│   └── monthly-data-import.yml
 ├── migrations/                # 0001~0007：schema、真實資料表、R01 站點、
 │                               # daily/range temporal 表、完整性欄位、holiday_events
 ├── scripts/                   # ETL／materialize／驗證／retention（皆為獨立 Python CLI）
 │   ├── import_od_data.py      # 月份匯入（含 --maintenance-reimport、--archive-to-r2）
+│   ├── check_latest_od_month.py # 只讀 availability checker，不寫 D1/R2、不下載 CSV
 │   ├── materialize_year_range.py / materialize_holiday_range.py
 │   ├── verify_range_parity.py / verify_year_parity.py / verify_holiday_parity.py
 │   ├── verify_recommend_baseline.py
