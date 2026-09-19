@@ -1,0 +1,86 @@
+name: Monthly OD Data Availability Check
+
+# 只做「官方 OD 資料是否已發布下一個月」的唯讀檢查（scripts/check_latest_od_month.py）。
+# 不匯入 production、不寫 D1／R2、不需要任何 Cloudflare 憑證——checker 只讀
+# production 網站自己的公開 API（GET /api/analytics/months）與官方 CSV 的 HEAD 回應。
+# 找到新月份時只建立／更新一個 GitHub Issue 作為人工觸發 monthly-data-import.yml 的提醒，
+# 絕不自動觸發匯入。
+
+on:
+  schedule:
+    # 每兩週一次：每月 1 號與 15 號 UTC 03:00（約台北時間 11:00）
+    - cron: '0 3 1,15 * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monthly-data-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run availability checker
+        id: check
+        run: python3 scripts/check_latest_od_month.py --github-output
+
+      - name: No new data
+        if: steps.check.outputs.result == 'NO_NEW_DATA'
+        run: echo "沒有新月份可匯入，安靜結束（不建立 issue）。"
+
+      - name: Create or update issue for newly available month
+        if: steps.check.outputs.result == 'NEW_MONTH_AVAILABLE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_LABEL: ${{ steps.check.outputs.next_month_label }}
+          NEXT_YEAR: ${{ steps.check.outputs.next_year }}
+          NEXT_MONTH: ${{ steps.check.outputs.next_month }}
+          LATEST_YEAR: ${{ steps.check.outputs.latest_year }}
+          LATEST_MONTH: ${{ steps.check.outputs.latest_month }}
+          CSV_URL: ${{ steps.check.outputs.csv_url }}
+        run: |
+          set -euo pipefail
+          TITLE="OD 資料可匯入：${NEXT_LABEL}"
+
+          # 標籤不存在時建立；已存在或建立失敗都不視為錯誤，不影響後續流程
+          gh label create data-import --color 0E8A16 \
+            --description "月份 OD 資料已發布，等待人工執行 production import" \
+            --repo "$GITHUB_REPOSITORY" || true
+
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already open for ${NEXT_LABEL} — skip（避免重複建立）。"
+            exit 0
+          fi
+
+          BODY=$(printf '%s\n' \
+            "自動偵測：官方台北捷運 OD 資料已發布 **${NEXT_LABEL}**。" \
+            "" \
+            "- 官方 CSV：${CSV_URL}" \
+            "- Production 目前最新月份：${LATEST_YEAR}-${LATEST_MONTH}" \
+            "" \
+            "**這是提醒，不是自動匯入。** 若要匯入這個月份，手動執行 monthly-data-import.yml（Actions → workflow_dispatch），輸入：" \
+            "" \
+            "- year: \`${NEXT_YEAR}\`" \
+            "- month: \`${NEXT_MONTH}\`" \
+            "" \
+            "匯入流程包含 import → R2 archive → parity 驗證 → 相關連假／年度 materialize → baseline/smoke test，任一步驟失敗會立即停止。確認匯入成功後，請手動關閉這個 issue。")
+
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --label data-import \
+            --body "$BODY"

@@ -1,0 +1,190 @@
+name: Production Monthly Data Import
+
+# 手動觸發（workflow_dispatch only）——絕不排程、絕不在 push/PR 時自動執行。
+# 流程：import → R2 archive → parity → 年度／連假 materialize（safe no-op 若尚未完整）
+#       → parity（依實際完整性選擇 --expect-incomplete）→ baseline/smoke。
+# 任一步驟失敗，後續步驟不會執行（GitHub Actions 預設行為：一個 step 失敗，job 停止）。
+# 不包含 retention purge——retention 永遠是 dry-run → 人工複核 → 手動 purge，不進任何 workflow。
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: '匯入年份（西元，如 2026）'
+        required: true
+        type: string
+      month:
+        description: '匯入月份（1-12）'
+        required: true
+        type: string
+      holiday_event_key:
+        description: >-
+          （選填）本次月份匯入後，一併嘗試 materialize 的連假 event_key（例如 mid-autumn、
+          national-day）。只有在你已人工確認該連假涵蓋的所有月份都已匯入完成時才填寫；
+          留空則只嘗試年度 materialize（safe no-op，尚未完整時只更新狀態列，不會出錯）。
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-monthly-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    env:
+      DB_NAME: mrt-rank-db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify required Cloudflare credentials are configured
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::尚未設定 repository secrets CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID。"
+            echo "::error::這個 workflow 需要能寫入 production Cloudflare D1／R2 的憑證才能執行匯入，此次執行中止。"
+            echo "::error::設定方式：repo Settings → Secrets and variables → Actions → New repository secret。"
+            echo "::error::CLOUDFLARE_API_TOKEN 建議使用僅有 D1:Edit 與 R2:Edit 權限、限定此帳號的專屬 token（不要用 Global API Key）。"
+            exit 1
+          fi
+          echo "Cloudflare credentials 已設定，繼續執行。"
+
+      - name: Import month (D1 + R2 archive)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 scripts/import_od_data.py \
+            --year "${{ inputs.year }}" --month "${{ inputs.month }}" \
+            --apply-remote --db-name "$DB_NAME" --archive-to-r2
+
+      - name: Verify month parity (must be 6/6 PASS)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python3 scripts/verify_range_parity.py \
+            --year "${{ inputs.year }}" --month "${{ inputs.month }}" \
+            --remote --db-name "$DB_NAME"
+
+      - name: Materialize year (safe no-op if not yet complete)
+        id: year_materialize
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          python3 scripts/materialize_year_range.py --year "${{ inputs.year }}" --remote --db-name "$DB_NAME" \
+            | tee /tmp/year_materialize.log
+          if grep -q "完整性：✅ 完整年度" /tmp/year_materialize.log; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify year parity
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ "${{ steps.year_materialize.outputs.complete }}" = "true" ]; then
+            python3 scripts/verify_year_parity.py --year "${{ inputs.year }}" --remote --db-name "$DB_NAME"
+          else
+            python3 scripts/verify_year_parity.py --year "${{ inputs.year }}" --remote --db-name "$DB_NAME" --expect-incomplete
+          fi
+
+      - name: Materialize holiday (only if holiday_event_key provided)
+        id: holiday_materialize
+        if: inputs.holiday_event_key != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          python3 scripts/materialize_holiday_range.py \
+            --event-key "${{ inputs.holiday_event_key }}" --year "${{ inputs.year }}" \
+            --remote --db-name "$DB_NAME" | tee /tmp/holiday_materialize.log
+          if grep -q "完整性：✅ 完整連假" /tmp/holiday_materialize.log; then
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify holiday parity
+        if: inputs.holiday_event_key != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ "${{ steps.holiday_materialize.outputs.complete }}" = "true" ]; then
+            python3 scripts/verify_holiday_parity.py \
+              --event-key "${{ inputs.holiday_event_key }}" --year "${{ inputs.year }}" --remote --db-name "$DB_NAME"
+          else
+            python3 scripts/verify_holiday_parity.py \
+              --event-key "${{ inputs.holiday_event_key }}" --year "${{ inputs.year }}" --remote --db-name "$DB_NAME" \
+              --expect-incomplete
+          fi
+
+      - name: Build worker bundle
+        run: npm run build
+
+      - name: Regression baseline & smoke check (local Worker against production D1)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          npx wrangler dev dist/_worker.js --remote --port 8788 > /tmp/wrangler-dev.log 2>&1 &
+          WRANGLER_PID=$!
+          trap 'kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+
+          echo "等待本地 Worker（連 production D1）就緒..."
+          READY=false
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:8788/api" >/dev/null 2>&1; then
+              READY=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$READY" != "true" ]; then
+            echo "::error::wrangler dev 逾時未就緒"
+            cat /tmp/wrangler-dev.log
+            exit 1
+          fi
+
+          python3 scripts/verify_recommend_baseline.py --base-url http://localhost:8788
+
+      - name: Summary
+        if: success()
+        env:
+          YEAR_COMPLETE: ${{ steps.year_materialize.outputs.complete }}
+          HOLIDAY_KEY: ${{ inputs.holiday_event_key }}
+          HOLIDAY_COMPLETE: ${{ steps.holiday_materialize.outputs.complete }}
+        run: |
+          echo "✅ ${{ inputs.year }}-${{ inputs.month }} 匯入、parity、baseline/smoke 全部通過。"
+          echo "年度 ${{ inputs.year }} materialize：$([ "$YEAR_COMPLETE" = "true" ] && echo 完整 || echo 尚未完整，僅更新狀態)"
+          if [ -n "$HOLIDAY_KEY" ]; then
+            echo "連假 ${HOLIDAY_KEY}:${{ inputs.year }} materialize：$([ "$HOLIDAY_COMPLETE" = "true" ] && echo 完整 || echo 尚未完整，僅更新狀態)"
+          fi
+          echo "本次未執行 retention purge。若原本有對應的 monthly-data-check issue，請人工確認後手動關閉。"
