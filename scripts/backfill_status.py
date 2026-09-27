@@ -16,7 +16,8 @@ MetroPulse — daily-granularity backfill status report
 backfill 一個月份的標準流程（見 docs/data/temporal-phase2b-hardening.md「Historical backfill」）：
   1. python3 scripts/backfill_status.py            — 確認這個月份目前缺逐日資料
   2. 取得該月原始 CSV（重新下載，或使用已封存的本地副本，見 provenance 段落）
-  3. python3 scripts/import_od_data.py --year Y --month M --csv-file <path> --apply-local（先在本地驗證）
+  3. 人工確認這是 legacy backfill 後，明確使用 --maintenance-reimport 在本地驗證
+     python3 scripts/import_od_data.py --year Y --month M --csv-file <path> --apply-local --maintenance-reimport
   4. python3 scripts/verify_range_parity.py --year Y --month M          — 確認新舊管線一致
   5. 確認無誤後才對 remote 執行同樣的 --apply-remote
   6. python3 scripts/backfill_status.py --remote   — 確認該月份狀態已更新為「已有逐日資料」
@@ -87,7 +88,10 @@ def main():
     if missing:
         print("\n缺逐日粒度的月份（backfill 候選）：")
         for y, mo in missing:
-            print(f"  python3 scripts/import_od_data.py --year {y} --month {mo} --csv-file <該月 CSV 路徑> --apply-local")
+            print(
+                f"  python3 scripts/import_od_data.py --year {y} --month {mo} "
+                f"--csv-file <該月 CSV 路徑> --apply-local --maintenance-reimport"
+            )
     print()
 
 

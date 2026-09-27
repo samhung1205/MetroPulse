@@ -52,6 +52,19 @@ HOUR_TO_PERIOD: dict[int, str] = {
 
 PERIODS = ['morning_peak', 'morning', 'noon', 'afternoon', 'evening_peak', 'night']
 
+IMPORT_STATE_NEW = 'ABSENT'
+IMPORT_STATE_COMPLETE = 'COMPLETE'
+IMPORT_STATE_CONFLICT = 'PARTIAL_OR_INCONSISTENT'
+
+
+class MonthImportBlocked(RuntimeError):
+    """Raised when the cost-safety preflight refuses a D1 write."""
+
+    def __init__(self, marker: str, message: str, exit_code: int = 2):
+        super().__init__(message)
+        self.marker = marker
+        self.exit_code = exit_code
+
 # ============================================================
 # 站名 → ID 對照表（從 seed.sql 提取，優先取主線代表站）
 # 轉乘站以主線 ID 為準（e.g. 台北車站 → BL12）
@@ -746,6 +759,175 @@ def _d1_json_query(sql: str, project_root: str, db_name: str, remote: bool) -> l
     return json.loads(result.stdout)[0]['results']
 
 
+def query_month_import_status(
+    year: int,
+    month: int,
+    project_root: str,
+    db_name: str,
+    remote: bool,
+) -> dict:
+    """Read the target month's D1 footprint before any CSV download, R2 upload, or D1 write.
+
+    This deliberately checks every table written by a normal monthly import. A target is eligible
+    for a NEW IMPORT only when all of those tables are empty for the month. Anything partial is a
+    maintenance incident, not an automatically resumable normal import.
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    month_start = f"{year:04d}-{month:02d}-01"
+    month_end = f"{year:04d}-{month:02d}-{last_day:02d}"
+    range_id = f"month:{year:04d}-{month:02d}"
+    periods_sql = ", ".join(f"'{period}'" for period in PERIODS)
+    sql = f"""
+WITH daily_dates AS (
+  SELECT
+    service_date,
+    COUNT(*) AS row_count,
+    COUNT(DISTINCT period) AS all_period_count,
+    COUNT(DISTINCT CASE WHEN period IN ({periods_sql}) THEN period END) AS expected_period_count
+  FROM daily_od_flow
+  WHERE service_date BETWEEN '{month_start}' AND '{month_end}'
+  GROUP BY service_date
+), month_range AS (
+  SELECT range_id, range_type, start_date, end_date, day_count
+  FROM date_ranges
+  WHERE range_id = '{range_id}'
+)
+SELECT
+  (SELECT COUNT(*) FROM data_months WHERE year = {year} AND month = {month}) AS data_months_count,
+  (SELECT COUNT(*) FROM real_od_flow WHERE year = {year} AND month = {month}) AS real_od_flow_count,
+  (SELECT COUNT(*) FROM real_pagerank WHERE year = {year} AND month = {month}) AS real_pagerank_count,
+  (SELECT COALESCE(SUM(row_count), 0) FROM daily_dates) AS daily_row_count,
+  (SELECT COUNT(*) FROM daily_dates) AS daily_day_count,
+  (SELECT COUNT(*) FROM daily_dates
+    WHERE all_period_count = {len(PERIODS)} AND expected_period_count = {len(PERIODS)}) AS complete_period_day_count,
+  (SELECT MIN(service_date) FROM daily_dates) AS daily_start_date,
+  (SELECT MAX(service_date) FROM daily_dates) AS daily_end_date,
+  (SELECT COUNT(*) FROM month_range) AS date_range_count,
+  (SELECT COUNT(*) FROM month_range WHERE range_type = 'month') AS month_range_count,
+  (SELECT start_date FROM month_range) AS range_start_date,
+  (SELECT end_date FROM month_range) AS range_end_date,
+  (SELECT day_count FROM month_range) AS range_day_count,
+  (SELECT COUNT(*) FROM range_od_flow WHERE range_id = '{range_id}') AS range_od_flow_count,
+  (SELECT COUNT(*) FROM range_pagerank WHERE range_id = '{range_id}') AS range_pagerank_count
+""".strip()
+    rows = _d1_json_query(sql, project_root, db_name, remote)
+    if len(rows) != 1:
+        raise MonthImportBlocked(
+            'MONTH_PREFLIGHT_QUERY_INVALID',
+            f'月份 preflight 預期取得 1 列狀態，實際取得 {len(rows)} 列；拒絕繼續。',
+        )
+    status = dict(rows[0])
+    status.update({
+        'year': year,
+        'month': month,
+        'month_start': month_start,
+        'month_end': month_end,
+        'expected_day_count': last_day,
+        'expected_pagerank_count': len(get_all_station_ids()) * len(PERIODS),
+        'range_id': range_id,
+    })
+    return status
+
+
+def classify_month_import_status(status: dict) -> str:
+    """Classify a mocked or real preflight row without performing any I/O."""
+    count_fields = (
+        'data_months_count', 'real_od_flow_count', 'real_pagerank_count', 'daily_row_count',
+        'daily_day_count', 'complete_period_day_count', 'date_range_count', 'month_range_count',
+        'range_od_flow_count', 'range_pagerank_count',
+    )
+    has_any_footprint = any(int(status.get(field) or 0) > 0 for field in count_fields)
+    if not has_any_footprint:
+        return IMPORT_STATE_NEW
+
+    expected_days = int(status['expected_day_count'])
+    expected_pr = int(status['expected_pagerank_count'])
+    daily_complete = (
+        int(status.get('daily_row_count') or 0) > 0
+        and int(status.get('daily_day_count') or 0) == expected_days
+        and int(status.get('complete_period_day_count') or 0) == expected_days
+        and status.get('daily_start_date') == status['month_start']
+        and status.get('daily_end_date') == status['month_end']
+    )
+    range_complete = (
+        int(status.get('month_range_count') or 0) == 1
+        and status.get('range_start_date') == status['month_start']
+        and status.get('range_end_date') == status['month_end']
+        and int(status.get('range_day_count') or 0) == expected_days
+        and int(status.get('range_od_flow_count') or 0) > 0
+        and int(status.get('range_pagerank_count') or 0) == expected_pr
+    )
+    legacy_month_complete = (
+        int(status.get('data_months_count') or 0) == 1
+        and int(status.get('real_od_flow_count') or 0) > 0
+        and int(status.get('real_pagerank_count') or 0) == expected_pr
+    )
+    if daily_complete and range_complete and legacy_month_complete:
+        return IMPORT_STATE_COMPLETE
+    return IMPORT_STATE_CONFLICT
+
+
+def enforce_month_import_guard(status: dict, maintenance_reimport: bool) -> str:
+    """Return the allowed operation, or fail closed before any large write."""
+    state = classify_month_import_status(status)
+    if maintenance_reimport:
+        if state == IMPORT_STATE_NEW:
+            raise MonthImportBlocked(
+                'MAINTENANCE_REIMPORT_REQUIRES_EXISTING_MONTH',
+                '--maintenance-reimport 只允許處理已有資料足跡的月份；全新月份必須走正常 NEW IMPORT。',
+            )
+        return 'MAINTENANCE RE-IMPORT'
+    if state == IMPORT_STATE_COMPLETE:
+        raise MonthImportBlocked(
+            'MONTH_ALREADY_IMPORTED',
+            '目標月份已有完整 daily granularity、month range 與 data_months；正常匯入不得覆寫。',
+        )
+    if state == IMPORT_STATE_CONFLICT:
+        raise MonthImportBlocked(
+            'MONTH_IMPORT_STATE_CONFLICT',
+            '目標月份已有部分或不一致的資料足跡；正常匯入不會自動 resume／overwrite，請人工調查並使用獨立 maintenance 流程。',
+        )
+    return 'NEW IMPORT'
+
+
+def run_month_import_preflight(
+    year: int,
+    month: int,
+    project_root: str,
+    db_name: str,
+    remote: bool,
+    maintenance_reimport: bool,
+) -> dict:
+    """Print the cost-safety decision before parsing or writing anything expensive."""
+    status = query_month_import_status(year, month, project_root, db_name, remote)
+    state = classify_month_import_status(status)
+    print("\n[COST SAFETY PREFLIGHT]")
+    print(f"  target_year_month = {year:04d}-{month:02d}")
+    print(f"  production_database = {db_name}")
+    print(f"  existing_month_status = {state}")
+    print(
+        "  existing_month_detail = "
+        f"data_months:{int(status.get('data_months_count') or 0)}, "
+        f"daily_rows:{int(status.get('daily_row_count') or 0)}, "
+        f"daily_days:{int(status.get('daily_day_count') or 0)}/{status['expected_day_count']}, "
+        f"complete_period_days:{int(status.get('complete_period_day_count') or 0)}/{status['expected_day_count']}, "
+        f"date_range:{int(status.get('date_range_count') or 0)}, "
+        f"month_range:{int(status.get('month_range_count') or 0)}, "
+        f"range_od_rows:{int(status.get('range_od_flow_count') or 0)}, "
+        f"range_pagerank_rows:{int(status.get('range_pagerank_count') or 0)}"
+    )
+    try:
+        operation = enforce_month_import_guard(status, maintenance_reimport)
+    except MonthImportBlocked:
+        print("  operation = BLOCKED")
+        print(f"  maintenance_reimport = {str(maintenance_reimport).lower()}")
+        raise
+    print(f"  operation = {operation}")
+    print(f"  maintenance_reimport = {str(maintenance_reimport).lower()}")
+    print("COST_SAFETY_PREFLIGHT_PASS")
+    return status
+
+
 def apply_maintenance_reimport(
     combined_sql: str,
     project_root: str,
@@ -1216,6 +1398,33 @@ def main():
         print("錯誤：月份需為 1-12", file=sys.stderr)
         sys.exit(1)
 
+    if args.apply_local and args.apply_remote:
+        print("錯誤：--apply-local 與 --apply-remote 不可同時使用。", file=sys.stderr)
+        sys.exit(1)
+
+    if args.maintenance_reimport and not (args.apply_local or args.apply_remote):
+        print("[錯誤] --maintenance-reimport 必須搭配 --apply-local 或 --apply-remote 使用。", file=sys.stderr)
+        sys.exit(1)
+
+    project_root = os.path.dirname(os.path.dirname(__file__))
+
+    # Cost guard 必須在 CSV 下載／解析、R2 封存、SQL 生成與 D1 write 之前執行。
+    # 正常匯入只有「所有目標表皆無該月足跡」才允許進入；完整或部分既有狀態一律 fail closed。
+    if args.apply_local or args.apply_remote:
+        try:
+            run_month_import_preflight(
+                args.year,
+                args.month,
+                project_root,
+                args.db_name,
+                remote=args.apply_remote,
+                maintenance_reimport=args.maintenance_reimport,
+            )
+        except MonthImportBlocked as exc:
+            print(exc.marker)
+            print(f"[停止] {exc}", file=sys.stderr)
+            sys.exit(exc.exit_code)
+
     # 確保輸出目錄存在
     output_dir = os.path.join(os.path.dirname(__file__), 'output')
     os.makedirs(output_dir, exist_ok=True)
@@ -1293,8 +1502,6 @@ def main():
     print(f"  合併 SQL 檔案大小：{file_size_mb:.2f} MB")
     print(f"  耗時：parse={t_parse:.2f}s old_pipeline_sql={t_old_pipeline:.2f}s daily_sql={t_daily:.2f}s aggregate={t_aggregate:.2f}s range_pagerank={t_range_pagerank:.2f}s")
 
-    project_root = os.path.dirname(os.path.dirname(__file__))
-
     # R2 raw-source 封存（decision 4）。刻意保持簡單：只在明確要求時做，單次嘗試。
     r2_info = {
         'r2_bucket': None, 'r2_object_key': None,
@@ -1332,9 +1539,6 @@ def main():
             ]
         }
         target_remote = args.apply_remote
-        if not (args.apply_local or args.apply_remote):
-            print("[錯誤] --maintenance-reimport 必須搭配 --apply-local 或 --apply-remote 使用。", file=sys.stderr)
-            sys.exit(1)
         t5 = datetime.now()
         apply_maintenance_reimport(combined_sql, project_root, args.db_name, target_remote, expected_counts)
         imported_at = datetime.now().isoformat(timespec='seconds')

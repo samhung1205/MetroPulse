@@ -199,7 +199,7 @@ curl "/api/recommend?from=BL12&time_period=night&preference=food&range_type=holi
 | 階段 | 狀態 | 機制 |
 |---|---|---|
 | **Availability check**（偵測官方新月份 CSV 是否發布） | ✅ **已自動化** | [`.github/workflows/monthly-data-check.yml`](.github/workflows/monthly-data-check.yml)，每兩週排程 + 可手動 `workflow_dispatch`；只讀（呼叫本站公開的 `/api/analytics/months` 與官方 CSV 的 HEAD 回應），不需要任何 Cloudflare 憑證，找到新月份時建立／更新一個 GitHub Issue 提醒，**不會自動匯入** |
-| **Production import**（實際寫入 D1／R2） | ⚠️ **人工核准觸發**，執行過程自動化 | [`.github/workflows/monthly-data-import.yml`](.github/workflows/monthly-data-import.yml)，僅 `workflow_dispatch`，需人工輸入 `year`／`month`（選填 `holiday_event_key`）後手動執行；import → R2 archive → parity → 年度 materialize → （選填）連假 materialize → baseline/smoke，任一步驟失敗立即停止 |
+| **Production import**（實際寫入 D1／R2） | ⚠️ **人工核准觸發**，執行過程自動化 | [`.github/workflows/monthly-data-import.yml`](.github/workflows/monthly-data-import.yml)，僅 `workflow_dispatch`，需人工輸入 `year`／`month`（選填 `holiday_event_key`）後手動執行；只允許全新月份，D1 duplicate preflight 通過後才執行 import → R2 archive → parity → 年度 materialize → （選填）連假 materialize → baseline/smoke，任一步驟失敗立即停止 |
 | **Retention purge**（清除 `daily_od_flow` 逐日明細） | 🔒 **只能人工執行**，永不自動化 | `scripts/retention.py`，流程固定 dry-run → 人工複核 → 取得 D1 Time Travel bookmark → 手動 `--purge`，**不進任何 workflow、不接 cron** |
 
 本地手動執行（與 workflow 內部呼叫的指令相同）：
@@ -221,7 +221,19 @@ python3 scripts/verify_year_parity.py --year YYYY --remote --db-name mrt-rank-db
 python3 scripts/verify_recommend_baseline.py --base-url <本地連 production D1 的 wrangler dev URL>
 ```
 
-已有月份需要重新匯入（例如上游 CSV 修正、或把只有舊版 legacy 資料的月份升級成新版逐日粒度）時使用 `--maintenance-reimport`：犧牲單一檔案的原子性（DELETE 與 INSERT 分兩次呼叫）以避開大表 DELETE 在非同步匯入路徑上的用戶端輪詢逾時，完成後強制核對列數，不一致會以非零狀態碼中止，不會靜默視為成功。**新月份的一般匯入請勿使用此旗標**（`monthly-data-import.yml` workflow 也未使用此旗標，只用於本地手動維運）。
+#### Monthly import cost guard
+
+正常匯入在下載 CSV、上傳 R2 或開始任何大量 D1 write **之前**，會先查詢指定月份的 `data_months`、`daily_od_flow`、`date_ranges`、`range_od_flow`／`range_pagerank` 與既有 `real_*` 表：
+
+- 完全沒有該月資料足跡：log 明確列出 target、`mrt-rank-db`、`existing_month_status = ABSENT`、`operation = NEW IMPORT`、`maintenance_reimport = false`，才允許繼續。
+- 已有完整逐日資料與 month range：輸出 `MONTH_ALREADY_IMPORTED` 並以非零狀態停止，不下載、不封存、不 DELETE／INSERT。
+- 只有部分資料或各表狀態不一致：輸出 `MONTH_IMPORT_STATE_CONFLICT` 並以非零狀態停止；正常 workflow 不會猜測如何 resume，也不會自動 overwrite。
+
+因此，若 D1 import 已成功、但後續 parity／year／holiday／baseline 或 smoke 失敗，按 GitHub Actions **Re-run jobs** 時會在 duplicate preflight 停止，不會再次完整寫入同月份。請先人工調查後續失敗原因；不要把「重跑整個正常 workflow」當成 maintenance re-import。
+
+Workflow 保留全域 `production-monthly-import` concurrency group，且 `cancel-in-progress: false`：所有 production 月匯入皆序列化（也避免不同月份同時 materialize 同一年度），相同月份的後到 run 會等待，不會取消一個可能已經開始寫 production 的 run；輪到它執行時會再次查 D1，由 preflight 阻擋 duplicate。workflow 沒有任何 import retry loop，smoke step 的短迴圈只等待本地 Worker 就緒，不會重跑匯入。
+
+已有月份需要重新匯入（例如上游 CSV 修正、或把只有舊版 legacy 資料的月份升級成新版逐日粒度）時，必須先人工調查狀態，再於 workflow 之外明確使用 `--maintenance-reimport`。這條特殊路徑會犧牲單一檔案的原子性（DELETE 與 INSERT 分兩次呼叫）以避開大表 DELETE 在非同步匯入路徑上的用戶端輪詢逾時，完成後強制核對列數，不一致會以非零狀態碼中止，不會靜默視為成功。**已匯入月份不得用正常 workflow 重匯；新月份的一般匯入也不得使用此旗標。** `monthly-data-import.yml` 刻意不提供、也不傳入此旗標；普通 workflow 重跑不可能自動切換成 maintenance mode。
 
 `monthly-data-import.yml` 需要 repository secrets `CLOUDFLARE_API_TOKEN`（建議建立僅有 D1:Edit 與 R2:Edit 權限的專屬 token，不要用 Global API Key）與 `CLOUDFLARE_ACCOUNT_ID`；尚未設定時執行會在第一步清楚失敗並說明設定方式，不會用空憑證嘗試寫入。
 
@@ -246,6 +258,7 @@ python3 scripts/retention.py --purge --remote --db-name mrt-rank-db
 | `verify_year_parity.py` | 驗證年度聚合正確性，含獨立於 `range_od_flow` 之外的 `daily_od_flow` 交叉驗證 |
 | `verify_holiday_parity.py` | 驗證連假聚合正確性 |
 | `verify_recommend_baseline.py` | 固定基準（`BL11→night→food`）分數回歸檢查，偵測任何非預期的排序／分數變動 |
+| `test_monthly_import_cost_guard.py` | 純 local/mock 驗證新月份放行、duplicate／partial 阻擋、workflow maintenance 隔離與 concurrency 設定；不連 production |
 | `retention.py --dry-run` | Retention 影響範圍預覽，不刪除任何資料 |
 
 ### 正確性不變量（每次驗證腳本實際檢查的內容）

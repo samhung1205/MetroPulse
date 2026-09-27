@@ -106,6 +106,19 @@ query path.
   6/6 PASS) → `materialize_year_range.py` (safe no-op if the year isn't complete yet) →
   `verify_year_parity.py` → optional `materialize_holiday_range.py` /
   `verify_holiday_parity.py` → `verify_recommend_baseline.py`. Any failing step stops the job.
+- **Normal monthly import is new-month-only**: before downloading the CSV, archiving to R2, or
+  writing D1, `import_od_data.py` queries the target month in D1. A complete existing month exits
+  non-zero with `MONTH_ALREADY_IMPORTED`; any partial/inconsistent footprint exits with
+  `MONTH_IMPORT_STATE_CONFLICT`. Re-running a workflow after D1 import succeeded but a later parity
+  or smoke step failed must stop at this preflight and must not rewrite the month automatically.
+- **Maintenance re-import is a separate, explicit human operation**: an already imported month
+  must never be re-imported with the normal workflow. `--maintenance-reimport` is intentionally
+  absent from `monthly-data-import.yml`; use it only after investigating the existing state and
+  deliberately choosing the documented manual maintenance procedure.
+- **Production monthly runs are serialized**: the workflow keeps one global production-import
+  concurrency group with `cancel-in-progress: false` (which also avoids concurrent year
+  materialization from different months). A later same-month duplicate waits instead of cancelling
+  an import that may already be writing; when it starts, the D1 preflight blocks it.
 - **Retention purge is never automated** — see Retention & Purge Rules above; it has no workflow
   and must stay that way.
 - If proposing further automation, keep the human-approval gate before any write step and never

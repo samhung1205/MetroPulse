@@ -16,7 +16,20 @@ on:
       month:
         description: '匯入月份（1-12）'
         required: true
-        type: string
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+          - '11'
+          - '12'
       holiday_event_key:
         description: >-
           （選填）本次月份匯入後，一併嘗試 materialize 的連假 event_key（例如 mid-autumn、
@@ -30,6 +43,8 @@ permissions:
   contents: read
 
 concurrency:
+  # Production monthly imports 全域序列化（因此同一 YYYY-MM 絕不會並行）；後到者等待，
+  # 不取消可能已經開始寫 D1 的 run。保留全域鎖也避免不同月份同時 materialize 同一年度。
   group: production-monthly-import
   cancel-in-progress: false
 
@@ -55,6 +70,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate canonical import target
+        env:
+          TARGET_YEAR: ${{ inputs.year }}
+          TARGET_MONTH: ${{ inputs.month }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TARGET_YEAR" =~ ^[0-9]{4}$ ]]; then
+            echo "::error::year 必須是 4 位數西元年份（YYYY）。"
+            exit 1
+          fi
+          if ! [[ "$TARGET_MONTH" =~ ^([1-9]|1[0-2])$ ]]; then
+            echo "::error::month 必須是 1-12 的 canonical 數字。"
+            exit 1
+          fi
+          echo "Canonical target: ${TARGET_YEAR}-$(printf '%02d' "$TARGET_MONTH")"
+
       - name: Verify required Cloudflare credentials are configured
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -74,6 +105,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          # import_od_data.py 會先做 read-only production preflight；只有完全無資料足跡才會進入
+          # NEW IMPORT。完整月份輸出 MONTH_ALREADY_IMPORTED，部分狀態輸出
+          # MONTH_IMPORT_STATE_CONFLICT，兩者都在 CSV 下載／R2／D1 write 前非零停止。
           python3 scripts/import_od_data.py \
             --year "${{ inputs.year }}" --month "${{ inputs.month }}" \
             --apply-remote --db-name "$DB_NAME" --archive-to-r2
