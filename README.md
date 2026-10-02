@@ -196,6 +196,8 @@ curl "/api/recommend?from=BL12&time_period=night&preference=food&range_type=holi
 
 ### Monthly 更新 SOP
 
+Availability checker 的唯讀 GET（月份 API）與 HEAD（官方 CSV）在網路逾時／連線失敗或 HTTP 408、429、500、502、503、504 時，最多嘗試 3 次；每次 timeout 20 秒，重試前等待 2／4 秒。官方 CSV 回傳 404 仍視為尚未發布，其他永久 HTTP 錯誤或重試耗盡則保留 `RESULT=ERROR` 與非零退出，供 Actions 通知。重試只適用於 availability check，不會重跑 production import。workflow log 即時顯示失敗 URL 與重試次數，job 最長執行 5 分鐘。
+
 | 階段 | 狀態 | 機制 |
 |---|---|---|
 | **Availability check**（偵測官方新月份 CSV 是否發布） | ✅ **已自動化** | [`.github/workflows/monthly-data-check.yml`](.github/workflows/monthly-data-check.yml)，每兩週排程 + 可手動 `workflow_dispatch`；只讀（呼叫本站公開的 `/api/analytics/months` 與官方 CSV 的 HEAD 回應），不需要任何 Cloudflare 憑證，找到新月份時建立／更新一個 GitHub Issue 提醒，**不會自動匯入** |
@@ -259,6 +261,7 @@ python3 scripts/retention.py --purge --remote --db-name mrt-rank-db
 | `verify_holiday_parity.py` | 驗證連假聚合正確性 |
 | `verify_recommend_baseline.py` | 固定基準（`BL11→night→food`）分數回歸檢查，偵測任何非預期的排序／分數變動 |
 | `test_monthly_import_cost_guard.py` | 純 local/mock 驗證新月份放行、duplicate／partial 阻擋、workflow maintenance 隔離與 concurrency 設定；不連 production |
+| `test_check_latest_od_month.py` | Mock HTTP 驗證 availability check 的逾時重試、404／永久錯誤與重試耗盡回報 |
 | `retention.py --dry-run` | Retention 影響範圍預覽，不刪除任何資料 |
 
 ### 正確性不變量（每次驗證腳本實際檢查的內容）

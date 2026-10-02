@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import date
@@ -45,6 +46,35 @@ from import_od_data import build_url  # noqa: E402 — 與 production import 共
 
 DEFAULT_BASE_URL = 'https://metro-go.pages.dev'
 DEFAULT_TIMEOUT = 20
+HTTP_ATTEMPTS = 3
+RETRYABLE_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+def read_http_with_retries(req: urllib.request.Request, timeout: int, read_response):
+    """Retry only the checker's read-only GET/HEAD requests, including response-body timeouts."""
+    if req.get_method() not in {'GET', 'HEAD'}:
+        raise ValueError('Availability checker retries only support GET/HEAD')
+    for attempt in range(1, HTTP_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return read_response(resp)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            # HTTPError subclasses URLError. 404 is handled by the upstream checker; other
+            # permanent HTTP errors (e.g. 401/403) must fail immediately instead of being hidden.
+            if isinstance(exc, urllib.error.HTTPError) and exc.code not in RETRYABLE_HTTP_STATUSES:
+                raise
+            if attempt == HTTP_ATTEMPTS:
+                raise RuntimeError(
+                    f'{req.get_method()} {req.full_url} failed after {attempt} attempts '
+                    f'(timeout={timeout}s per attempt): {exc}'
+                ) from exc
+            delay = 2 ** attempt
+            print(
+                f'[重試] {req.get_method()} {req.full_url}：第 {attempt}/{HTTP_ATTEMPTS} 次失敗 '
+                f'（{exc}），{delay} 秒後重試',
+                file=sys.stderr, flush=True,
+            )
+            time.sleep(delay)
 
 
 def next_month(year: int, month: int) -> tuple[int, int]:
@@ -58,8 +88,7 @@ def get_latest_production_month(base_url: str, timeout: int) -> tuple[int, int]:
     這是給一般使用者用的 HTTPS 公開端點，跟直接查詢 D1 資料庫是兩回事。"""
     url = f"{base_url.rstrip('/')}/api/analytics/months"
     req = urllib.request.Request(url, headers={'User-Agent': 'metropulse-availability-checker'})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.load(resp)
+    payload = read_http_with_retries(req, timeout, json.load)
     if not payload.get('success') or not payload.get('months'):
         raise RuntimeError(f"/api/analytics/months 回應不含任何月份資料：{json.dumps(payload, ensure_ascii=False)[:200]}")
     latest = max(payload['months'], key=lambda m: (m['year'], m['month']))
@@ -71,16 +100,16 @@ def check_upstream_availability(year: int, month: int, timeout: int) -> tuple[bo
     url = build_url(year, month)
     req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'metropulse-availability-checker'})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            status = resp.status
-            content_length = resp.headers.get('Content-Length')
-            last_modified = resp.headers.get('Last-Modified')
+        status, content_length, last_modified = read_http_with_retries(
+            req, timeout,
+            lambda resp: (resp.status, resp.headers.get('Content-Length'), resp.headers.get('Last-Modified')),
+        )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return False, {'url': url, 'http_status': 404}
         raise
     if status != 200:
-        return False, {'url': url, 'http_status': status}
+        raise RuntimeError(f'HEAD {url} returned unexpected HTTP status {status}')
     return True, {
         'url': url,
         'http_status': status,
@@ -107,6 +136,9 @@ def main() -> int:
     parser.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT, help=f'HTTP timeout 秒數（預設 {DEFAULT_TIMEOUT}）')
     parser.add_argument('--github-output', action='store_true', help='額外把結果寫入 $GITHUB_OUTPUT（GitHub Actions step output）')
     args = parser.parse_args()
+
+    if args.timeout <= 0:
+        parser.error('--timeout 必須大於 0')
 
     if (args.year is None) != (args.month is None):
         print('[錯誤] --year 與 --month 必須同時提供或同時省略', file=sys.stderr)

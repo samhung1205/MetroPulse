@@ -23,6 +23,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -34,7 +35,9 @@ jobs:
 
       - name: Run availability checker
         id: check
-        run: python3 scripts/check_latest_od_month.py --github-output
+        # Only read-only GET/HEAD requests retry (3 attempts, 20s timeout, 2s/4s backoff).
+        # Unbuffered output makes the failing request and retry visible immediately in Actions.
+        run: python3 -u scripts/check_latest_od_month.py --github-output
 
       - name: No new data
         if: steps.check.outputs.result == 'NO_NEW_DATA'
